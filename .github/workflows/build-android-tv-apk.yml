@@ -1,0 +1,154 @@
+name: Build Android TV APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type (debug or release)'
+        required: false
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ─── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ─── Node.js ─────────────────────────────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # ─── Java (required by Gradle / Android SDK) ──────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ─── Android SDK ─────────────────────────────────────────────────────────
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # ─── Install npm dependencies ─────────────────────────────────────────
+      - name: Install dependencies
+        run: npm ci
+
+      # ─── Build the web app (Vite → dist/) ────────────────────────────────
+      - name: Build web app
+        run: npm run build
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      # ─── Capacitor: add Android platform if not already present ──────────
+      - name: Add Android platform (first-time only)
+        run: |
+          if [ ! -d "android" ]; then
+            echo "android/ folder not found — running cap add android"
+            npx cap add android
+          else
+            echo "android/ folder found — skipping cap add"
+          fi
+
+      # ─── Capacitor: sync web assets into the Android project ─────────────
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      # ─── Patch AndroidManifest for Android TV / Leanback ─────────────────
+      # Adds the LEANBACK_LAUNCHER intent filter so the app appears in the
+      # TV home screen launcher. Also sets android:banner for the TV grid.
+      - name: Patch AndroidManifest.xml for Android TV
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+
+          # Inject LEANBACK_LAUNCHER intent-filter if not already present
+          if ! grep -q "LEANBACK_LAUNCHER" "$MANIFEST"; then
+            echo "Patching manifest with LEANBACK_LAUNCHER intent-filter…"
+            sed -i 's|</activity>|        <intent-filter>\n                <action android:name="android.intent.action.MAIN" />\n                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />\n            </intent-filter>\n        </activity>|' "$MANIFEST"
+          fi
+
+          # Declare leanback feature as required=false (keeps it installable on phones too)
+          if ! grep -q "android.software.leanback" "$MANIFEST"; then
+            sed -i 's|<manifest|<manifest|;/<manifest/a\    <uses-feature android:name="android.software.leanback" android:required="false" />\n    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />' "$MANIFEST"
+          fi
+
+          echo "Manifest after patch:"
+          cat "$MANIFEST"
+
+      # ─── Make Gradle wrapper executable ──────────────────────────────────
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      # ─── Build DEBUG APK (always) ─────────────────────────────────────────
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      # ─── (Optional) Build RELEASE APK ─────────────────────────────────────
+      # Requires KEYSTORE_BASE64, KEY_ALIAS, KEY_STORE_PASS, KEY_PASS secrets.
+      # Only runs when triggered via workflow_dispatch with build_type=release
+      # or when a tag like v1.0.0 is pushed.
+      - name: Decode keystore
+        if: |
+          (github.event.inputs.build_type == 'release') ||
+          (startsWith(github.ref, 'refs/tags/v'))
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
+
+      - name: Build release APK
+        if: |
+          (github.event.inputs.build_type == 'release') ||
+          (startsWith(github.ref, 'refs/tags/v'))
+        working-directory: android
+        run: |
+          ./gradlew assembleRelease --no-daemon \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/android/app/release.keystore" \
+            -Pandroid.injected.signing.store.password="${{ secrets.KEY_STORE_PASS }}" \
+            -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
+            -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASS }}"
+
+      # ─── Upload artifacts ─────────────────────────────────────────────────
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ambient-canvas-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+      - name: Upload release APK
+        if: |
+          (github.event.inputs.build_type == 'release') ||
+          (startsWith(github.ref, 'refs/tags/v'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: ambient-canvas-release-${{ github.sha }}
+          path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 90
+
+      # ─── Summary ─────────────────────────────────────────────────────────
+      - name: Build summary
+        run: |
+          echo "## ✅ Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**App:** Ambient Canvas Overlay" >> $GITHUB_STEP_SUMMARY
+          echo "**App ID:** com.ambient.canvas.overlay" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Sideload to Android TV" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "# With ADB over network (enable in TV Settings → Device Preferences → Developer options)" >> $GITHUB_STEP_SUMMARY
+          echo "adb connect <tv-ip>:5555" >> $GITHUB_STEP_SUMMARY
+          echo "adb install -r app-debug.apk" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
