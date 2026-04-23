@@ -1,0 +1,6 @@
+{
+  "name": "Ambient Canvas Overlay",
+  "description": "A Google TV overlay app that uses Arduino sensor data (lux, temp) to match TV appearance to room ambiance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
