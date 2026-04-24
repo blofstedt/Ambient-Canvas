@@ -730,13 +730,28 @@ export default function App() {
                           </p>
                           <button 
                             onClick={async () => {
+                              const popup = window.open("", "gphotos_oauth", "width=500,height=600");
                               try {
                                 const origin = window.location.origin;
                                 const res = await fetch(`/api/google-photos/auth-url?origin=${encodeURIComponent(origin)}`);
+                                if (!res.ok) {
+                                  throw new Error(`Failed to get auth URL (${res.status})`);
+                                }
                                 const { url } = await res.json();
-                                window.open(url, "gphotos_oauth", "width=500,height=600");
+                                if (!url) {
+                                  throw new Error("Missing auth URL from server");
+                                }
+
+                                if (popup) {
+                                  popup.location.href = url;
+                                  popup.focus();
+                                } else {
+                                  // Fallback for strict popup blockers.
+                                  window.location.href = url;
+                                }
                               } catch (e) {
                                 console.error(e);
+                                if (popup && !popup.closed) popup.close();
                               }
                             }} 
                             className="px-10 py-4 bg-blue-500 hover:bg-blue-400 text-white rounded-xl text-[10px] uppercase tracking-[0.3em] font-bold shadow-[0_0_20px_rgba(59,130,246,0.3)] transition-all flex items-center gap-3"
