@@ -19,6 +19,9 @@ async function startServer() {
   });
 
   const getOAuthClient = (redirectUri: string) => {
+    if (!process.env.GOOGLE_PHOTOS_CLIENT_ID || !process.env.GOOGLE_PHOTOS_CLIENT_SECRET) {
+      throw new Error("Missing GOOGLE_PHOTOS_CLIENT_ID/GOOGLE_PHOTOS_CLIENT_SECRET environment variables");
+    }
     return new google.auth.OAuth2(
       process.env.GOOGLE_PHOTOS_CLIENT_ID,
       process.env.GOOGLE_PHOTOS_CLIENT_SECRET,
@@ -26,32 +29,46 @@ async function startServer() {
     );
   };
 
-  app.get("/api/google-photos/auth-url", (req, res) => {
-    const origin = req.query.origin as string;
-    if (!origin) {
-      return res.status(400).json({ error: "Missing origin parameter" });
+  const resolveRedirectUri = (origin?: string) => {
+    if (process.env.GOOGLE_REDIRECT_URI) {
+      return process.env.GOOGLE_REDIRECT_URI;
     }
-    const redirectUri = `${origin}/api/google-photos/callback`;
-    const oauth2Client = getOAuthClient(redirectUri);
+    if (!origin) {
+      throw new Error("Missing origin parameter and GOOGLE_REDIRECT_URI is not set");
+    }
+    return `${origin}/api/google-photos/callback`;
+  };
 
-    const authUrl = oauth2Client.generateAuthUrl({
-      access_type: 'offline',
-      scope: ['https://www.googleapis.com/auth/photoslibrary.readonly'],
-      state: origin // Pass origin in state to use during callback
-    });
-    res.json({ url: authUrl });
+  app.get("/api/google-photos/auth-url", (req, res) => {
+    try {
+      const origin = req.query.origin as string | undefined;
+      const redirectUri = resolveRedirectUri(origin);
+      const oauth2Client = getOAuthClient(redirectUri);
+
+      const authUrl = oauth2Client.generateAuthUrl({
+        access_type: 'offline',
+        scope: ['https://www.googleapis.com/auth/photoslibrary.readonly'],
+        state: origin || ''
+      });
+      res.json({ url: authUrl });
+    } catch (e) {
+      const message = (e as Error).message;
+      res.status(500).json({
+        error: `${message}. Ensure your OAuth client has this exact redirect URI authorized: ${process.env.GOOGLE_REDIRECT_URI || `${req.query.origin}/api/google-photos/callback`}`
+      });
+    }
   });
 
   app.get("/api/google-photos/callback", async (req, res) => {
     const { code, state } = req.query;
-    const origin = state as string;
 
-    if (!origin || !code) {
-       return res.status(400).send("Missing code or state");
+    if (!code) {
+       return res.status(400).send("Missing authorization code");
     }
 
     try {
-      const redirectUri = `${origin}/api/google-photos/callback`;
+      const origin = typeof state === 'string' && state.length > 0 ? state : undefined;
+      const redirectUri = resolveRedirectUri(origin);
       const oauth2Client = getOAuthClient(redirectUri);
       
       const { tokens } = await oauth2Client.getToken(code as string);
@@ -65,7 +82,7 @@ async function startServer() {
                 window.opener.postMessage({ type: 'GPHOTOS_AUTH_SUCCESS', token: '${tokens.access_token}' }, '*');
                 window.close();
               } else {
-                window.location.href = '/?gphotos_connected=true&token=${tokens.access_token}';
+                window.location.href = '/?gphotos_connected=true&token=${tokens.access_token || ''}';
               }
             </script>
             <p>Authentication successful. You can close this window now.</p>
