@@ -17,9 +17,15 @@ interface RoomProfile {
 }
 
 export default function App() {
-  // Telemetry & Discovery
+  // Telemetry & Discovery (Multiple Sensors)
+  const [sensors, setSensors] = useState<Record<string, { name: string, ip: string, lastSeen: number }>>(() => {
+    try {
+      const saved = localStorage.getItem('ambient_sensors');
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
+  const [selectedSensorId, setSelectedSensorId] = useState<string>(() => localStorage.getItem('selected_sensor_id') || '');
   const [telemetry, setTelemetry] = useState({ lux: 15, temp: 2800, motion: true });
-  const [arduinoIp, setArduinoIp] = useState(() => localStorage.getItem('arduino_ip') || 'ambient-sensor.local');
   const [isScanning, setIsScanning] = useState(true);
   const [discoveryState, setDiscoveryState] = useState<'searching' | 'connected' | 'lost'>('searching');
   
@@ -48,7 +54,7 @@ export default function App() {
   
   // Custom Media Sources
   const [localFiles, setLocalFiles] = useState<string[]>([]);
-  const [gPhotosConnected, setGPhotosConnected] = useState(false);
+  const [gPhotosConnected, setGPhotosConnected] = useState<boolean>(() => !!localStorage.getItem('gphotos_token'));
   const [gPhotosSelectedAlbum, setGPhotosSelectedAlbum] = useState<string | null>(null);
 
   const [time, setTime] = useState(new Date());
@@ -90,17 +96,65 @@ export default function App() {
   const [luminance, setLuminance] = useState(60);
   const [warmth, setWarmth] = useState(200);
 
-  // GPhotos Mock Data
-  const MOCK_GPHOTOS_ALBUMS = [
-    { id: '1', name: 'Favorites', count: 42, cover: 'https://images.unsplash.com/photo-1518173946687-a4c8892bbd9f?auto=format&fit=crop&q=80&w=400' },
-    { id: '2', name: 'Vacations 2024', count: 18, cover: 'https://images.unsplash.com/photo-1499856871958-5b9627545d1a?auto=format&fit=crop&q=80&w=400' },
-    { id: '3', name: 'Landscapes', count: 124, cover: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=400' }
-  ];
+  // GPhotos Data
+  const [gPhotosToken, setGPhotosToken] = useState<string | null>(() => localStorage.getItem('gphotos_token'));
+  const [gPhotosAlbums, setGPhotosAlbums] = useState<any[]>([]);
+  const [gPhotosPics, setGPhotosPics] = useState<string[]>([]);
 
-  const MOCK_GPHOTOS_PICS = [
-    "https://images.unsplash.com/photo-1518173946687-a4c8892bbd9f?auto=format&fit=crop&q=80&w=1920",
-    "https://images.unsplash.com/photo-1499856871958-5b9627545d1a?auto=format&fit=crop&q=80&w=1920"
-  ];
+  // Fetch Albums
+  useEffect(() => {
+    if (gPhotosToken) {
+      fetch('/api/google-photos/albums', {
+        headers: { Authorization: `Bearer ${gPhotosToken}` }
+      })
+      .then(res => {
+        if (res.status === 401) {
+          setGPhotosConnected(false);
+          setGPhotosToken(null);
+          localStorage.removeItem('gphotos_token');
+          throw new Error('Unauthorized');
+        }
+        return res.json();
+      })
+      .then(data => {
+        if (data.albums) {
+          setGPhotosAlbums(data.albums.map((a: any) => ({
+            id: a.id,
+            name: a.title,
+            count: a.mediaItemsCount,
+            cover: a.coverPhotoBaseUrl ? a.coverPhotoBaseUrl + '=w400-h400-c' : null
+          })));
+        }
+      })
+      .catch(console.error);
+    }
+  }, [gPhotosToken]);
+
+  // Fetch Photos for specific album
+  useEffect(() => {
+    if (gPhotosToken && gPhotosSelectedAlbum) {
+      fetch(`/api/google-photos/photos?albumId=${gPhotosSelectedAlbum}`, {
+        headers: { Authorization: `Bearer ${gPhotosToken}` }
+      })
+      .then(res => {
+        if (res.status === 401) {
+          setGPhotosConnected(false);
+          setGPhotosToken(null);
+          localStorage.removeItem('gphotos_token');
+          throw new Error('Unauthorized');
+        }
+        return res.json();
+      })
+      .then(data => {
+        if (data.mediaItems) {
+          // get baseUrls, optionally append '=w1920-h1080' or similar for size
+          setGPhotosPics(data.mediaItems.map((m: any) => m.baseUrl + '=w1920-h1080'));
+          setArtIndex(0);
+        }
+      })
+      .catch(console.error);
+    }
+  }, [gPhotosToken, gPhotosSelectedAlbum]);
 
   const getWeatherIcon = (code: number) => {
     if (code === 0) return <Sun className="w-10 h-10 opacity-90 text-[#D4CDA4]" />;
@@ -113,8 +167,8 @@ export default function App() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handleLocalFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []).filter(f => f.type.startsWith('image/'));
-    const urls = files.map(f => URL.createObjectURL(f));
+    const files = Array.from(e.target.files || []) as File[];
+    const urls = files.filter(f => f.type.startsWith('image/')).map(f => URL.createObjectURL(f));
     if (urls.length > 0) {
       setLocalFiles(urls);
       setImageSource('local');
@@ -123,6 +177,42 @@ export default function App() {
     }
   };
 
+  // Handle OAuth callback via popup message
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      // Validate origin
+      const origin = event.origin;
+      if (!origin.endsWith('.run.app') && !origin.includes('localhost')) {
+         return;
+      }
+      if (event.data?.type === 'GPHOTOS_AUTH_SUCCESS') {
+        const token = event.data.token;
+        if (token) {
+          localStorage.setItem('gphotos_token', token);
+          setGPhotosToken(token);
+        }
+        setGPhotosConnected(true);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    
+    // Fallback if URL redirect was triggered instead
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('gphotos_connected') === 'true') {
+      const token = params.get('token');
+      if (token) {
+        localStorage.setItem('gphotos_token', token);
+        setGPhotosToken(token);
+      }
+      setGPhotosConnected(true);
+      
+      // clean up URL
+      window.history.replaceState({}, document.title, "/");
+    }
+
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+  
   // Load user-defined profiles from storage
   const [profiles, setProfiles] = useState<Record<string, RoomProfile>>(() => {
     try {
@@ -154,20 +244,32 @@ export default function App() {
     };
   };
 
-  // 1. discovery & Heartbeat
+  // 1. Discovery & Heartbeat
   useEffect(() => {
-    let retryCount = 0;
-    const strategies = [
-      `http://${arduinoIp}`,            // User preference / Last known
-      'http://ambient-sensor.local',    // Product standard mDNS
-      'http://10.0.0.60'                // Specific dev fallback
-    ];
+    // In a real Android TV app using Capacitor/Zeroconf, we would scan here.
+    // For this preview, we simulate discovery at startup.
+    if (isScanning && Object.keys(sensors).length === 0) {
+      const mockDiscovery = setTimeout(() => {
+        const discovered = {
+          'AA:BB:CC:11': { name: 'Basement Gym', ip: '192.168.1.50', lastSeen: Date.now() },
+          'AA:BB:CC:22': { name: 'Theatre Room', ip: '192.168.1.51', lastSeen: Date.now() }
+        };
+        setSensors(discovered);
+        localStorage.setItem('ambient_sensors', JSON.stringify(discovered));
+        if (!selectedSensorId) setSelectedSensorId('AA:BB:CC:11');
+        setIsScanning(false);
+        setDiscoveryState('connected');
+      }, 2000);
+      return () => clearTimeout(mockDiscovery);
+    }
+  }, [isScanning, sensors, selectedSensorId]);
+
+  useEffect(() => {
+    if (!selectedSensorId || !sensors[selectedSensorId]) return;
 
     const fetchTelemetry = async () => {
-      // Rotate strategy if we are searching and failing
-      const target = isScanning ? strategies[retryCount % strategies.length] : `http://${arduinoIp}`;
-
       try {
+        const target = `http://${sensors[selectedSensorId].ip}`;
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 1500);
         const res = await fetch(target, { signal: controller.signal });
@@ -176,28 +278,16 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           setTelemetry(data);
-          
-          if (isScanning) {
-            // First time finding it! Lock it in.
-            const successfulIp = new URL(target).hostname;
-            setArduinoIp(successfulIp);
-            localStorage.setItem('arduino_ip', successfulIp);
-            setIsScanning(false);
-            setDiscoveryState('connected');
-          }
+          setDiscoveryState('connected');
         }
       } catch (e) {
-        if (!isScanning) {
-          setDiscoveryState('lost');
-          setIsScanning(true); // Restart search
-        }
-        retryCount++;
+        setDiscoveryState('lost');
       }
     };
 
-    const interval = setInterval(fetchTelemetry, isScanning ? 2000 : 4000);
+    const interval = setInterval(fetchTelemetry, 4000);
     return () => clearInterval(interval);
-  }, [arduinoIp, isScanning]);
+  }, [selectedSensorId, sensors]);
 
   // 2. Automate Rotation based on settings
   useEffect(() => {
@@ -321,13 +411,12 @@ export default function App() {
       artist: `Folder Item ${artIndex % localFiles.length + 1}`,
       url: localFiles[artIndex % localFiles.length]
     };
-  } else if (imageSource === 'gphotos' && gPhotosSelectedAlbum) {
-    // Note: MOCK_GPHOTOS_PICS simulates the actual URLs we'd fetch via API
+  } else if (imageSource === 'gphotos' && gPhotosSelectedAlbum && gPhotosPics.length > 0) {
     currentArt = {
       id: 888,
       title: "Google Photos",
-      artist: MOCK_GPHOTOS_ALBUMS.find(a => a.id === gPhotosSelectedAlbum)?.name || "Album",
-      url: MOCK_GPHOTOS_PICS[artIndex % MOCK_GPHOTOS_PICS.length]
+      artist: gPhotosAlbums.find(a => a.id === gPhotosSelectedAlbum)?.name || "Album",
+      url: gPhotosPics[artIndex % gPhotosPics.length]
     };
   }
 
@@ -643,7 +732,16 @@ export default function App() {
                             Project ID: gen-lang-client-<br/>0313256568
                           </p>
                           <button 
-                            onClick={() => { setGPhotosConnected(true); resetMenuTimer(); }} 
+                            onClick={async () => {
+                              try {
+                                const origin = window.location.origin;
+                                const res = await fetch(`/api/google-photos/auth-url?origin=${encodeURIComponent(origin)}`);
+                                const { url } = await res.json();
+                                window.open(url, "gphotos_oauth", "width=500,height=600");
+                              } catch (e) {
+                                console.error(e);
+                              }
+                            }} 
                             className="px-10 py-4 bg-blue-500 hover:bg-blue-400 text-white rounded-xl text-[10px] uppercase tracking-[0.3em] font-bold shadow-[0_0_20px_rgba(59,130,246,0.3)] transition-all flex items-center gap-3"
                           >
                             <UserCircle2 className="w-4 h-4" /> Authenticate
@@ -653,20 +751,27 @@ export default function App() {
                         <div className="flex flex-col h-full">
                           <div className="flex justify-between items-center mb-6">
                             <h3 className="text-[#D4CDA4] text-[10px] uppercase tracking-[0.3em] font-bold">Select Library Album</h3>
-                            <button onClick={() => setGPhotosConnected(false)} className="text-[9px] text-white/30 uppercase tracking-widest hover:text-white">Disconnect</button>
+                            <button onClick={() => {
+                              setGPhotosConnected(false);
+                              setGPhotosToken(null);
+                              localStorage.removeItem('gphotos_token');
+                              setGPhotosSelectedAlbum(null);
+                              setGPhotosAlbums([]);
+                              setGPhotosPics([]);
+                            }} className="text-[9px] text-white/30 uppercase tracking-widest hover:text-white">Disconnect</button>
                           </div>
                           
                           <div className="grid grid-cols-3 gap-4 overflow-y-auto pr-2 pb-4">
-                            {MOCK_GPHOTOS_ALBUMS.map(album => (
+                            {gPhotosAlbums.map(album => (
                               <div 
                                 key={album.id}
-                                onClick={() => { setGPhotosSelectedAlbum(album.id); setArtIndex(0); resetMenuTimer(); }}
+                                onClick={() => { setGPhotosSelectedAlbum(album.id); setImageSource('gphotos'); setArtIndex(0); resetMenuTimer(); }}
                                 className={`cursor-pointer relative rounded-2xl overflow-hidden aspect-square border-2 transition-all ${gPhotosSelectedAlbum === album.id ? 'border-[#D4CDA4] shadow-[0_0_20px_rgba(212,205,164,0.3)] scale-105 z-10' : 'border-transparent opacity-60 hover:opacity-100'}`}
                               >
-                                <img src={album.cover} className="absolute inset-0 w-full h-full object-cover" alt={album.name} />
+                                {album.cover && <img src={album.cover} className="absolute inset-0 w-full h-full object-cover" alt={album.name} />}
                                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent flex flex-col justify-end p-4">
                                   <div className="text-[10px] font-bold uppercase tracking-widest text-white shadow-black">{album.name}</div>
-                                  <div className="text-[8px] font-mono text-[#D4CDA4] mt-1">{album.count} Items</div>
+                                  <div className="text-[8px] font-mono text-[#D4CDA4] mt-1">{album.count || 0} Items</div>
                                 </div>
                                 {gPhotosSelectedAlbum === album.id && (
                                   <div className="absolute top-3 right-3 bg-[#D4CDA4] text-[#1A1D14] rounded-full p-1 shadow-lg">
@@ -675,6 +780,11 @@ export default function App() {
                                 )}
                               </div>
                             ))}
+                            {gPhotosAlbums.length === 0 && (
+                               <div className="col-span-3 text-center py-8 text-white/40 text-[10px] uppercase tracking-widest">
+                                Loading albums...
+                               </div>
+                            )}
                           </div>
                         </div>
                       )}
@@ -687,115 +797,68 @@ export default function App() {
 
             {/* TAB 3: SYSTEM */}
             {activeTab === 'system' && (
-              <div className="flex flex-col gap-10 animate-in fade-in zoom-in-95 duration-500">
-                {/* Top Row: System Status & Connection */}
-                <div className="flex items-center gap-12 pb-8 border-b border-white/5">
-                  <div className="flex-1 flex flex-col items-center">
-                    <div className="text-[10px] text-[#A3B18A]/50 uppercase tracking-[0.3em] mb-4 flex items-center gap-2 font-bold justify-center">
-                      <Activity className="w-4 h-4" /> System Core Status
-                    </div>
-                    <div className="grid grid-cols-3 gap-12 text-center w-full max-w-md">
-                      <div>
-                        <label className="text-[10px] text-white/20 uppercase tracking-[0.3em] block mb-2 font-bold">Lux</label>
-                        <div className="text-3xl font-mono text-[#D4CDA4]">{telemetry.lux}</div>
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-white/20 uppercase tracking-[0.3em] block mb-2 font-bold">Kelvin</label>
-                        <div className="text-3xl font-mono text-[#D4CDA4]">{telemetry.temp}</div>
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-white/20 uppercase tracking-[0.3em] block mb-2 font-bold">Motion</label>
-                        <div className={`text-3xl font-mono ${telemetry.motion ? 'text-[#A3B18A]' : 'text-white/10'}`}>
-                          {telemetry.motion ? 'YES' : 'NO'}
+              <div className="flex flex-col gap-8 animate-in fade-in zoom-in-95 duration-500">
+                
+                {/* Discovery & Selection */}
+                <div className="grid grid-cols-2 gap-8">
+                  <div className="bg-[#1A1D14]/80 border border-white/5 p-8 rounded-[2rem]">
+                    <div className="text-[10px] text-[#A3B18A] uppercase tracking-[0.3em] font-bold mb-6">Discovered Sensors</div>
+                    <div className="flex flex-col gap-3">
+                      {Object.entries(sensors).map(([mac, sensor]: [string, any]) => (
+                        <div key={mac} className={`flex items-center gap-4 p-4 rounded-xl border ${selectedSensorId === mac ? 'bg-[#D4CDA4]/10 border-[#D4CDA4]' : 'bg-white/5 border-white/5'}`}>
+                          <input 
+                            className="bg-transparent text-[11px] font-mono outline-none text-white w-full"
+                            value={sensor.name}
+                            onChange={(e) => {
+                              const newSensors = { ...sensors, [mac]: { ...sensor, name: e.target.value } };
+                              setSensors(newSensors);
+                              localStorage.setItem('ambient_sensors', JSON.stringify(newSensors));
+                            }}
+                          />
+                          <button 
+                            onClick={() => { setSelectedSensorId(mac); localStorage.setItem('selected_sensor_id', mac); resetMenuTimer(); }}
+                            className={`text-[9px] uppercase tracking-widest font-bold px-4 py-2 rounded-lg ${selectedSensorId === mac ? 'bg-[#D4CDA4] text-[#1A1D14]' : 'bg-white/10 text-white/50'}`}
+                          >
+                            {selectedSensorId === mac ? 'Active' : 'Select'}
+                          </button>
                         </div>
-                      </div>
+                      ))}
                     </div>
                   </div>
 
-                  <div className="w-px h-16 bg-white/5 self-center" />
+                  <div className="bg-[#1A1D14]/80 border border-white/5 p-8 rounded-[2rem] text-white/60">
+                    <div className="text-[10px] text-[#A3B18A] uppercase tracking-[0.3em] font-bold mb-6">WiFi Setup Help</div>
+                    <p className="text-[11px] leading-relaxed mb-4">If a sensor isn't listed, ensure it's powered on and in setup mode.</p>
+                    <ol className="text-[11px] leading-relaxed list-decimal pl-4 space-y-2">
+                        <li>Connect your phone's WiFi to <span className="text-[#D4CDA4] font-mono">Ambient-Sensor-Setup</span></li>
+                        <li>Follow the pop-up instructions to connect to your home WiFi.</li>
+                        <li>Return to this screen once the sensor joins your network.</li>
+                    </ol>
+                  </div>
+                </div>
 
-                  <div className="flex-1 max-w-sm">
-                    <div className="bg-[#1A1D14]/80 border border-white/5 p-5 rounded-[1.5rem] flex items-center gap-5 shadow-inner">
-                      <span className={`w-4 h-4 rounded-full flex-shrink-0 ${
-                        discoveryState === 'connected' ? 'bg-green-500 shadow-[0_0_20px_rgba(34,197,94,0.6)]' : 
-                        discoveryState === 'searching' ? 'bg-amber-500 animate-pulse' : 'bg-red-500'
-                      }`} />
-                      <div className="flex flex-col flex-1 justify-center min-h-[44px]">
-                        <span className="text-[10px] text-[#A3B18A] uppercase tracking-[0.3em] font-bold">Ambient Sensor</span>
-                        <input 
-                          className="bg-transparent text-[11px] font-mono border-none outline-none text-white/40 w-full mt-2"
-                          value={arduinoIp}
-                          onChange={(e) => { setArduinoIp(e.target.value); setIsScanning(true); resetMenuTimer(); }}
-                          placeholder="Configure Device IP"
-                        />
+                {/* Telemetry Display */}
+                <div className="border-t border-white/5 pt-8 flex items-center justify-between">
+                  <div className="text-[10px] text-[#A3B18A]/50 uppercase tracking-[0.3em] font-bold flex items-center gap-2">
+                    <Activity className="w-4 h-4" /> Live Telemetry: {selectedSensorId ? sensors[selectedSensorId]?.name : 'None'}
+                  </div>
+                  <div className="flex gap-12 text-center">
+                    <div>
+                      <label className="text-[10px] text-white/20 uppercase tracking-[0.3em] block mb-2 font-bold">Lux</label>
+                      <div className="text-3xl font-mono text-[#D4CDA4]">{telemetry.lux}</div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-white/20 uppercase tracking-[0.3em] block mb-2 font-bold">Kelvin</label>
+                      <div className="text-3xl font-mono text-[#D4CDA4]">{telemetry.temp}</div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-white/20 uppercase tracking-[0.3em] block mb-2 font-bold">Motion</label>
+                      <div className={`text-3xl font-mono ${telemetry.motion ? 'text-[#A3B18A]' : 'text-white/10'}`}>
+                        {telemetry.motion ? 'YES' : 'NO'}
                       </div>
                     </div>
                   </div>
                 </div>
-
-                {/* Automation & Safety */}
-                <div className="grid grid-cols-2 gap-16">
-                  <div className="space-y-8">
-                    <div className="space-y-5">
-                      <div className="flex justify-between items-center text-[10px] uppercase tracking-[0.3em] text-white/30 font-bold">
-                        <span>Occupancy Action</span>
-                      </div>
-                      <div className="flex gap-4">
-                        <button 
-                          onClick={() => { setPowerSafeAction('black'); resetMenuTimer(); }}
-                          className={`flex-1 py-4 rounded-2xl text-[10px] uppercase tracking-widest font-bold border transition-all ${powerSafeAction === 'black' ? 'bg-[#D4CDA4] border-[#D4CDA4] text-[#1A1D14] shadow-lg' : 'bg-white/5 border-white/5 text-white/40'}`}
-                        >
-                          Fade Black
-                        </button>
-                        <button 
-                          onClick={() => { setPowerSafeAction('off'); resetMenuTimer(); }}
-                          className={`flex-1 py-4 rounded-2xl text-[10px] uppercase tracking-widest font-bold border transition-all ${powerSafeAction === 'off' ? 'bg-[#D4CDA4] border-[#D4CDA4] text-[#1A1D14] shadow-lg' : 'bg-white/5 border-white/5 text-white/40'}`}
-                        >
-                          Off (CEC)
-                        </button>
-                      </div>
-                      <div className="text-[9px] text-white/20 uppercase tracking-widest text-center mt-2 italic">What happens when the room is empty</div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-8 flex flex-col justify-end">
-                    <div className="space-y-5">
-                      <div className="flex justify-between items-center text-[10px] uppercase tracking-[0.3em] text-white/30 font-bold">
-                        <span>Sleep Timer Requirement</span>
-                        <span className="text-[#A3B18A] font-mono text-xs">{powerSafeMinutes} MIN</span>
-                      </div>
-                      <div className="relative h-2 flex items-center">
-                        <input 
-                          type="range" min={1} max={10} value={powerSafeMinutes} 
-                          onChange={(e) => { setPowerSafeMinutes(Number(e.target.value)); resetMenuTimer(); }}
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                        />
-                        <div className="w-full h-1 bg-white/5 rounded-full" />
-                        <div className="absolute h-1 bg-[#D4CDA4]" style={{ width: `${(powerSafeMinutes - 1) / 9 * 100}%` }} />
-                        <div className="absolute w-6 h-6 rounded-full bg-[#D4CDA4] border-[5px] border-[#1A1D14] shadow-lg" style={{ left: `calc(${(powerSafeMinutes - 1) / 9 * 100}% - 12px)` }} />
-                      </div>
-                    </div>
-
-                    <div className="space-y-5 pt-4">
-                      <div className="flex justify-between items-center text-[10px] uppercase tracking-[0.3em] text-white/30 font-bold">
-                        <span>Motion Sensitivity Filter</span>
-                        <span className="text-[#A3B18A] font-mono text-xs">{motionSensitivity} SAMPLES</span>
-                      </div>
-                      <div className="relative h-2 flex items-center">
-                        <input 
-                          type="range" min={1} max={10} value={motionSensitivity} 
-                          onChange={(e) => { setMotionSensitivity(Number(e.target.value)); resetMenuTimer(); }}
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                        />
-                        <div className="w-full h-1 bg-white/5 rounded-full" />
-                        <div className="absolute h-1 bg-[#A3B18A]" style={{ width: `${(motionSensitivity - 1) / 9 * 100}%` }} />
-                        <div className="absolute w-6 h-6 rounded-full bg-[#A3B18A] border-[5px] border-[#1A1D14] shadow-lg" style={{ left: `calc(${(motionSensitivity - 1) / 9 * 100}% - 12px)` }} />
-                      </div>
-                      <div className="text-[9px] text-white/20 uppercase tracking-widest text-center mt-2 italic">Higher value prevents false waking from noise</div>
-                    </div>
-                  </div>
-                </div>
-
               </div>
             )}
 
