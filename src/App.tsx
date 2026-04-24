@@ -100,6 +100,7 @@ export default function App() {
   const [gPhotosToken, setGPhotosToken] = useState<string | null>(() => localStorage.getItem('gphotos_token'));
   const [gPhotosAlbums, setGPhotosAlbums] = useState<any[]>([]);
   const [gPhotosPics, setGPhotosPics] = useState<string[]>([]);
+  const [gPhotosAuthError, setGPhotosAuthError] = useState<string | null>(null);
 
   // Fetch Albums
   useEffect(() => {
@@ -730,6 +731,7 @@ export default function App() {
                           </p>
                           <button 
                             onClick={async () => {
+                              setGPhotosAuthError(null);
                               const popup = window.open("", "gphotos_oauth", "width=500,height=600");
                               try {
                                 const origin = window.location.origin;
@@ -751,6 +753,7 @@ export default function App() {
                                 }
                               } catch (e) {
                                 console.error(e);
+                                setGPhotosAuthError("Authentication could not be started. Check your Vercel function logs and OAuth redirect URI.");
                                 if (popup && !popup.closed) popup.close();
                               }
                             }} 
@@ -758,6 +761,11 @@ export default function App() {
                           >
                             <UserCircle2 className="w-4 h-4" /> Authenticate
                           </button>
+                          {gPhotosAuthError && (
+                            <p className="mt-4 text-[10px] uppercase tracking-[0.15em] text-red-300 font-mono">
+                              {gPhotosAuthError}
+                            </p>
+                          )}
                         </div>
                       ) : (
                         <div className="flex flex-col h-full">

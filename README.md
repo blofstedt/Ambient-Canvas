@@ -25,5 +25,6 @@ View your app in AI Studio: https://ai.studio/apps/c03f1ec2-14f6-4556-bacc-cf9d8
    - **Google Photos Library API** is enabled
    - The OAuth client includes the exact same redirect URI as `GOOGLE_REDIRECT_URI`
    - For Vercel, this is usually `https://<your-project>.vercel.app/api/google-photos/callback`
+   - The same OAuth env vars are set in your Vercel Project Settings → Environment Variables
 5. Run the app:
    `npm run dev`
