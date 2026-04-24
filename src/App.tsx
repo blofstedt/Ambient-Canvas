@@ -180,11 +180,8 @@ export default function App() {
   // Handle OAuth callback via popup message
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      // Validate origin
-      const origin = event.origin;
-      if (!origin.endsWith('.run.app') && !origin.includes('localhost')) {
-         return;
-      }
+      // Only accept OAuth messages from this exact app origin.
+      if (event.origin !== window.location.origin) return;
       if (event.data?.type === 'GPHOTOS_AUTH_SUCCESS') {
         const token = event.data.token;
         if (token) {
