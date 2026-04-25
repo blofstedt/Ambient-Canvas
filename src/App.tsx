@@ -16,6 +16,14 @@ interface RoomProfile {
   warmth: number;
 }
 
+interface SensorInfo {
+  name: string;
+  ip: string;
+  lastSeen: number;
+}
+
+type PendingRenameQueue = Record<string, string>;
+
 const TvSlider = ({ label, value, min, max, step, suffix, onChange, onSave, gradientClasses, thumbColor, thumbLeftCalc }: any) => {
   const [isEditing, setIsEditing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -85,9 +93,15 @@ const TvSlider = ({ label, value, min, max, step, suffix, onChange, onSave, grad
 
 export default function App() {
   // Telemetry & Discovery (Multiple Sensors)
-  const [sensors, setSensors] = useState<Record<string, { name: string, ip: string, lastSeen: number }>>(() => {
+  const [sensors, setSensors] = useState<Record<string, SensorInfo>>(() => {
     try {
       const saved = localStorage.getItem('ambient_sensors_v2');
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
+  const [pendingRenames, setPendingRenames] = useState<PendingRenameQueue>(() => {
+    try {
+      const saved = localStorage.getItem('ambient_pending_renames_v1');
       return saved ? JSON.parse(saved) : {};
     } catch { return {}; }
   });
@@ -112,8 +126,11 @@ export default function App() {
 
   // UI Overlays & Sources
   const [showClock, setShowClock] = useState(true);
-  const [showWeather, setShowWeather] = useState(true);
-  const [weatherLocation, setWeatherLocation] = useState('Locating...');
+  const [showWeather, setShowWeather] = useState<boolean>(() => {
+    const saved = localStorage.getItem('ambient_show_weather_v1');
+    return saved === 'true';
+  });
+  const [weatherLocation, setWeatherLocation] = useState('Enable weather to get local forecast');
   const [weatherTemp, setWeatherTemp] = useState<number | null>(null);
   const [weatherCode, setWeatherCode] = useState<number>(0);
   const [imageSource, setImageSource] = useState<'curated' | 'local'>('curated');
@@ -123,43 +140,66 @@ export default function App() {
 
   const [time, setTime] = useState(new Date());
 
-  // Weather Fetching Logic (Geolocation & Open-Meteo)
-  useEffect(() => {
-    const fetchWeather = async () => {
-      try {
-        if (!("geolocation" in navigator)) {
-          setWeatherLocation("Location Unavailable");
-          return;
+  const requestWeatherPermission = async (): Promise<boolean> => {
+    if (!("geolocation" in navigator)) {
+      setWeatherLocation("Location Unavailable");
+      return false;
+    }
+
+    return new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        () => resolve(true),
+        () => resolve(false),
+        { enableHighAccuracy: false, timeout: 7000, maximumAge: 60_000 }
+      );
+    });
+  };
+
+  const fetchWeather = async () => {
+    try {
+      if (!("geolocation" in navigator)) {
+        setWeatherLocation("Location Unavailable");
+        setWeatherTemp(null);
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(async (position) => {
+        const lat = position.coords.latitude;
+        const lon = position.coords.longitude;
+        
+        try {
+          const geoRes = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
+          const geoData = await geoRes.json();
+          if (geoData.city || geoData.locality) {
+            setWeatherLocation(`${geoData.city || geoData.locality}, ${geoData.principalSubdivision || geoData.countryCode}`);
+          } else {
+            setWeatherLocation('Unknown Location');
+          }
+        } catch {
+          setWeatherLocation('Location Found');
         }
 
-        navigator.geolocation.getCurrentPosition(async (position) => {
-          const lat = position.coords.latitude;
-          const lon = position.coords.longitude;
-          
-          try {
-            const geoRes = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
-            const geoData = await geoRes.json();
-            if (geoData.city || geoData.locality) {
-              setWeatherLocation(`${geoData.city || geoData.locality}, ${geoData.principalSubdivision || geoData.countryCode}`);
-            } else {
-              setWeatherLocation('Unknown Location');
-            }
-          } catch {
-            setWeatherLocation('Location Found');
-          }
+        const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&temperature_unit=celsius`);
+        const data = await weatherRes.json();
+        setWeatherTemp(Math.round(data.current_weather.temperature));
+        setWeatherCode(data.current_weather.weathercode);
+      }, () => {
+        setWeatherLocation("Location Access Denied");
+        setWeatherTemp(null);
+      }, { enableHighAccuracy: false, timeout: 7000, maximumAge: 60_000 });
+    } catch (e) {
+      console.error("Weather fetch error", e);
+    }
+  };
 
-          const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&temperature_unit=celsius`);
-          const data = await weatherRes.json();
-          setWeatherTemp(Math.round(data.current_weather.temperature));
-          setWeatherCode(data.current_weather.weathercode);
-        }, () => {
-          setWeatherLocation("Location Access Denied");
-        });
-      } catch (e) {
-        console.error("Weather fetch error", e);
-      }
-    };
-    if (showWeather) fetchWeather();
+  useEffect(() => {
+    localStorage.setItem('ambient_show_weather_v1', String(showWeather));
+    if (!showWeather) {
+      setWeatherTemp(null);
+      setWeatherLocation('Enable weather to get local forecast');
+      return;
+    }
+    fetchWeather();
     const interval = setInterval(fetchWeather, 15 * 60 * 1000); // refresh every 15 min
     return () => clearInterval(interval);
   }, [showWeather]);
@@ -185,6 +225,70 @@ export default function App() {
     if (code < 70 || (code >= 80 && code <= 82)) return <CloudRain className="w-10 h-10 opacity-90 text-[#D4CDA4]" />;
     if (code < 80 || code >= 85) return <CloudSnow className="w-10 h-10 opacity-90 text-[#D4CDA4]" />;
     return <CloudLightning className="w-10 h-10 opacity-90 text-[#D4CDA4]" />;
+  };
+
+  const saveSensors = (updatedSensors: Record<string, SensorInfo>) => {
+    setSensors(updatedSensors);
+    localStorage.setItem('ambient_sensors_v2', JSON.stringify(updatedSensors));
+  };
+
+  const savePendingRenames = (queue: PendingRenameQueue) => {
+    setPendingRenames(queue);
+    localStorage.setItem('ambient_pending_renames_v1', JSON.stringify(queue));
+  };
+
+  const normalizeSensorName = (name: string) => {
+    const cleaned = name.trim().replace(/\s+/g, ' ').slice(0, 24);
+    if (!cleaned) return '';
+    return `${cleaned} - ambient tv sensor`;
+  };
+
+  const updateSensorName = async (sensorId: string, newNameRaw: string) => {
+    const sensor = sensors[sensorId];
+    if (!sensor) return;
+
+    const formattedName = normalizeSensorName(newNameRaw);
+    if (!formattedName) {
+      alert('Please enter a valid sensor name.');
+      return;
+    }
+
+    const optimisticSensors = { ...sensors, [sensorId]: { ...sensor, name: formattedName, lastSeen: Date.now() } };
+    saveSensors(optimisticSensors);
+
+    try {
+      const res = await fetch(`http://${sensor.ip}/api/name`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: formattedName })
+      });
+      if (!res.ok) throw new Error('rename failed');
+      const queue = { ...pendingRenames };
+      delete queue[sensorId];
+      savePendingRenames(queue);
+    } catch (e) {
+      savePendingRenames({ ...pendingRenames, [sensorId]: formattedName });
+    }
+  };
+
+  const flushPendingRename = async (sensorId: string) => {
+    const sensor = sensors[sensorId];
+    const pendingName = pendingRenames[sensorId];
+    if (!sensor || !pendingName) return;
+
+    try {
+      const res = await fetch(`http://${sensor.ip}/api/name`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: pendingName })
+      });
+      if (!res.ok) return;
+      const queue = { ...pendingRenames };
+      delete queue[sensorId];
+      savePendingRenames(queue);
+    } catch {
+      // keep queued
+    }
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -232,7 +336,11 @@ export default function App() {
     if (isScanning) {
       setDiscoveryState('searching');
       const scanNetwork = async () => {
-        const subnets = ['192.168.1', '192.168.0', '192.168.86', '192.168.68', '192.168.50', '10.0.0', '192.168.254'];
+        const knownSubnets = Object.values(sensors)
+          .map((sensor) => sensor.ip.split('.').slice(0, 3).join('.'))
+          .filter((subnet) => subnet.split('.').length === 3);
+        const fallbackSubnets = ['192.168.1', '192.168.0', '192.168.86', '192.168.68', '192.168.50', '10.0.0', '192.168.254'];
+        const subnets = [...new Set([...knownSubnets, ...fallbackSubnets])];
         const newSensors = { ...sensors };
         let foundAny = false;
 
@@ -255,9 +363,9 @@ export default function App() {
           }
         };
 
-        const batchSize = 255; // Increase batch size to hit all IPs concurrently for speed
+        const batchSize = 64;
         for (const subnet of subnets) {
-          if (foundAny) break; // found on this subnet, stop aggressive blanket scanning
+          if (foundAny) break;
           
           let i = 1;
           while (i < 255) {
@@ -270,8 +378,7 @@ export default function App() {
         }
 
         if (foundAny) {
-          setSensors(newSensors);
-          localStorage.setItem('ambient_sensors_v2', JSON.stringify(newSensors));
+          saveSensors(newSensors);
           if (!selectedSensorId) {
             const firstId = Object.keys(newSensors)[0];
             setSelectedSensorId(firstId);
@@ -286,7 +393,7 @@ export default function App() {
 
       scanNetwork();
     }
-  }, [isScanning]);
+  }, [isScanning, sensors, selectedSensorId]);
 
   useEffect(() => {
     if (!selectedSensorId || !sensors[selectedSensorId]) return;
@@ -302,7 +409,22 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           setTelemetry(data);
+          if (data.id) {
+            const existing = sensors[data.id];
+            if (existing) {
+              const updated = {
+                ...sensors,
+                [data.id]: {
+                  ...existing,
+                  name: data.name || existing.name,
+                  lastSeen: Date.now()
+                }
+              };
+              saveSensors(updated);
+            }
+          }
           setDiscoveryState('connected');
+          flushPendingRename(selectedSensorId);
         }
       } catch (e) {
         setDiscoveryState('lost');
@@ -477,9 +599,11 @@ export default function App() {
           <div className="text-[0.8vw] font-mono opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold">{time.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
         </div>
         <div className={`transition-opacity duration-700 text-right ${showWeather ? 'opacity-100' : 'opacity-0'}`}>
-          <div className="text-[4vw] font-serif tracking-tighter text-[#EAE6DA] drop-shadow-2xl flex items-center justify-end gap-[1vw] leading-none">
-            {weatherTemp !== null ? `${weatherTemp}°C` : '--°C'}
-            <div className="scale-[1.5] origin-right">{getWeatherIcon(weatherCode)}</div>
+          <div className="flex flex-col items-end gap-[0.6vw]">
+            <div className="text-[3.4vw] font-serif tracking-tighter text-[#EAE6DA] drop-shadow-2xl leading-none">
+              {weatherTemp !== null ? `${weatherTemp}°C` : '--°C'}
+            </div>
+            <div className="scale-[1.1] origin-right h-[3vw] flex items-center justify-end">{getWeatherIcon(weatherCode)}</div>
           </div>
           <div className="text-[0.8vw] font-mono opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold">{weatherLocation}</div>
         </div>
@@ -524,7 +648,24 @@ export default function App() {
                   <span className="text-[0.7vw] uppercase tracking-widest font-bold mt-[0.2vw]">Clock</span>
                 </button>
                 <button 
-                  onClick={() => { setShowWeather(!showWeather); resetMenuTimer(); }} 
+                  onClick={async () => {
+                    if (showWeather) {
+                      setShowWeather(false);
+                      resetMenuTimer();
+                      return;
+                    }
+                    const allowed = await requestWeatherPermission();
+                    if (!allowed) {
+                      setShowWeather(false);
+                      setWeatherTemp(null);
+                      setWeatherLocation('Location permission required');
+                      alert('Weather cannot be enabled without location permission.');
+                    } else {
+                      setShowWeather(true);
+                      fetchWeather();
+                    }
+                    resetMenuTimer();
+                  }} 
                   className={`flex-1 aspect-square rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${showWeather ? 'bg-[#D4CDA4]/10 border-[#D4CDA4] text-[#D4CDA4]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
                 >
                   <Cloud className="w-[1.2vw] h-[1.2vw]" />
@@ -597,8 +738,7 @@ export default function App() {
                                 const data = await res.json();
                                 if (data.id) {
                                   const newSensors = { ...sensors, [data.id]: { name: data.name || 'Manual Sensor', ip: val, lastSeen: Date.now() } };
-                                  setSensors(newSensors);
-                                  localStorage.setItem('ambient_sensors_v2', JSON.stringify(newSensors));
+                                  saveSensors(newSensors);
                                   setSelectedSensorId(data.id);
                                   localStorage.setItem('selected_sensor_id_v2', data.id);
                                 }
@@ -611,12 +751,47 @@ export default function App() {
                       />
                     </div>
                   </div>
-                ) : Object.entries(sensors).map(([mac, sensor]: [string, any]) => (
-                    <div key={mac} className={`flex justify-between items-center p-[0.8vw] rounded-[0.5vw] mb-[0.5vw] border ${selectedSensorId === mac ? 'bg-[#D4CDA4]/10 border-[#D4CDA4]' : 'border-white/5 hover:bg-white/10'}`}>
-                      <span className="text-[0.9vw] text-white font-mono">{sensor.name}</span>
-                      <button onClick={() => { setSelectedSensorId(mac); localStorage.setItem('selected_sensor_id_v2', mac); resetMenuTimer(); }} className={`text-[0.7vw] uppercase font-bold px-[1vw] py-[0.5vw] rounded-[0.2vw] transition-all ${selectedSensorId === mac ? 'bg-[#D4CDA4] text-[#1A1D14]' : 'bg-white/10 text-white/50 hover:bg-white/20'}`}>
-                        {selectedSensorId === mac ? 'Active' : 'Select'}
-                      </button>
+                ) : Object.entries(sensors).map(([mac, sensor]) => (
+                    <div key={mac} className={`p-[0.8vw] rounded-[0.5vw] mb-[0.5vw] border space-y-[0.7vw] ${selectedSensorId === mac ? 'bg-[#D4CDA4]/10 border-[#D4CDA4]' : 'border-white/5 hover:bg-white/10'}`}>
+                      <div className="flex justify-between items-center gap-[0.8vw]">
+                        <div className="flex flex-col">
+                          <span className="text-[0.9vw] text-white font-mono">{sensor.name}</span>
+                          <span className="text-[0.62vw] text-white/40 font-mono">{sensor.ip}</span>
+                        </div>
+                        <button onClick={() => { setSelectedSensorId(mac); localStorage.setItem('selected_sensor_id_v2', mac); resetMenuTimer(); }} className={`text-[0.7vw] uppercase font-bold px-[1vw] py-[0.5vw] rounded-[0.2vw] transition-all ${selectedSensorId === mac ? 'bg-[#D4CDA4] text-[#1A1D14]' : 'bg-white/10 text-white/50 hover:bg-white/20'}`}>
+                          {selectedSensorId === mac ? 'Active' : 'Select'}
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-[0.6vw]">
+                        <input
+                          type="text"
+                          maxLength={24}
+                          placeholder="Rename sensor"
+                          defaultValue={sensor.name.replace(' - ambient tv sensor', '')}
+                          className="bg-black/30 border border-white/10 rounded-[0.4vw] px-[0.8vw] py-[0.45vw] text-[0.62vw] font-mono text-white/80 w-full focus:outline-none focus:border-[#D4CDA4]/50"
+                          onKeyDown={async (e) => {
+                            if (e.key === 'Enter') {
+                              await updateSensorName(mac, e.currentTarget.value);
+                            }
+                          }}
+                        />
+                        <button
+                          onClick={async (e) => {
+                            const input = e.currentTarget.parentElement?.querySelector('input');
+                            if (input) {
+                              await updateSensorName(mac, input.value);
+                            }
+                          }}
+                          className="text-[0.62vw] uppercase font-bold px-[0.9vw] py-[0.45vw] rounded-[0.3vw] bg-white/10 text-white/60 hover:bg-white/20 transition-colors"
+                        >
+                          Save
+                        </button>
+                      </div>
+                      {pendingRenames[mac] && (
+                        <div className="text-[0.55vw] text-[#A3B18A] uppercase tracking-widest">
+                          Rename queued (will sync when sensor is online)
+                        </div>
+                      )}
                     </div>
                 ))}
               </div>
