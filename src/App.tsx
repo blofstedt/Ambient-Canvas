@@ -44,19 +44,27 @@ const TvSlider = ({ label, value, min, max, step, suffix, onChange, onSave, grad
           if (!isEditing) {
             if (e.key === 'Enter') {
               e.preventDefault();
+              e.stopPropagation();
               setIsEditing(true);
             }
           } else {
             if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'Backspace') {
               e.preventDefault();
+              e.stopPropagation();
               setIsEditing(false);
               if (onSave) onSave(value);
             } else if (e.key === 'ArrowLeft') {
               e.preventDefault();
+              e.stopPropagation();
               onChange(Math.max(min, value - step));
             } else if (e.key === 'ArrowRight') {
               e.preventDefault();
+              e.stopPropagation();
               onChange(Math.min(max, value + step));
+            } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+              // Prevent losing focus accidentally while editing
+              e.preventDefault();
+              e.stopPropagation();
             }
           }
         }}
@@ -247,7 +255,7 @@ export default function App() {
           }
         };
 
-        const batchSize = 40; // Prevent browser connection pooling from stalling requests
+        const batchSize = 255; // Increase batch size to hit all IPs concurrently for speed
         for (const subnet of subnets) {
           if (foundAny) break; // found on this subnet, stop aggressive blanket scanning
           
@@ -574,12 +582,6 @@ export default function App() {
                   <div className="flex flex-col items-center justify-center text-white/60 text-[0.8vw] uppercase text-center h-full gap-[0.5vw]">
                     <p className="font-bold text-[#D4CDA4]">No Sensors Found</p>
                     <p className="text-[0.7vw] text-white/40 leading-relaxed max-w-[80%] mt-[0.5vw]">Please connect your phone to "Ambient Setup" to set up your ambient sensor.</p>
-                    
-                    {window.location.protocol === 'https:' && (
-                      <p className="text-[0.6vw] text-red-400/80 leading-relaxed max-w-[80%] mt-[0.5vw] normal-case bg-red-400/10 p-[0.5vw] rounded">
-                        Auto-discovery is blocked by your browser because this app is on HTTPS. Use the manual IP below.
-                      </p>
-                    )}
 
                     <div className="mt-[1vw] flex gap-[0.5vw] items-center w-full max-w-[70%]">
                       <input 
