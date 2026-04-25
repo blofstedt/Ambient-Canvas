@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Eye, EyeOff, Image as ImageIcon, ChevronLeft, ChevronRight, Settings, Clock, Cloud, FolderOpen, Power, MonitorPlay, LayoutTemplate, Sun, CloudRain, CloudFog, CloudSnow, CloudLightning, CheckCircle2, Search } from 'lucide-react';
+import { Activity, Eye, EyeOff, Image as ImageIcon, ChevronLeft, ChevronRight, Settings, Clock, Cloud, FolderOpen, Power, MonitorPlay, LayoutTemplate, Sun, CloudRain, CloudFog, CloudSnow, CloudLightning, CheckCircle2, Search, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Art Collection
@@ -15,6 +15,65 @@ interface RoomProfile {
   luminance: number;
   warmth: number;
 }
+
+const TvSlider = ({ label, value, min, max, step, suffix, onChange, onSave, gradientClasses, thumbColor, thumbLeftCalc }: any) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  return (
+    <div className="space-y-[0.5vw]">
+      <div className="flex justify-between items-center text-[0.8vw] uppercase tracking-[0.3em] text-white/50 font-bold">
+        <span>{label} {isEditing && <span className="text-white animate-pulse ml-2">(EDIT)</span>}</span>
+        <span className="text-[#A3B18A] font-mono text-[0.9vw]">{value}{suffix}</span>
+      </div>
+      <div 
+        ref={containerRef}
+        tabIndex={0}
+        className={`relative h-[1vw] flex items-center rounded-full transition-all cursor-pointer outline-none select-none ${isEditing ? 'ring-[0.2vw] ring-white scale-[1.02]' : 'focus:ring-[0.2vw] focus:ring-[#D4CDA4]/70'}`}
+        onClick={() => {
+          if (!isEditing) {
+            setIsEditing(true);
+            containerRef.current?.focus();
+          }
+        }}
+        onBlur={() => {
+          setIsEditing(false);
+          if (onSave) onSave(value);
+        }}
+        onKeyDown={(e) => {
+          if (!isEditing) {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              setIsEditing(true);
+            }
+          } else {
+            if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'Backspace') {
+              e.preventDefault();
+              setIsEditing(false);
+              if (onSave) onSave(value);
+            } else if (e.key === 'ArrowLeft') {
+              e.preventDefault();
+              onChange(Math.max(min, value - step));
+            } else if (e.key === 'ArrowRight') {
+              e.preventDefault();
+              onChange(Math.min(max, value + step));
+            }
+          }
+        }}
+      >
+        <div className={`w-full h-[0.6vw] rounded-full relative ${gradientClasses}`}>
+          <div 
+            className="absolute top-1/2 -translate-y-1/2 w-[1.2vw] h-[1.2vw] rounded-full border-[0.2vw] border-[#1A1D14] transition-all duration-200 pointer-events-none" 
+            style={{ 
+              backgroundColor: thumbColor,
+              left: thumbLeftCalc || `calc(${((value - min) / (max - min)) * 100}% - 0.6vw)` 
+            }} 
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export default function App() {
   // Telemetry & Discovery (Multiple Sensors)
@@ -165,36 +224,41 @@ export default function App() {
     if (isScanning) {
       setDiscoveryState('searching');
       const scanNetwork = async () => {
-        const subnets = ['192.168.1', '192.168.0', '192.168.50', '192.168.86', '10.0.0'];
+        const subnets = ['192.168.1', '192.168.0', '192.168.86', '192.168.68', '192.168.50', '10.0.0', '192.168.254'];
         const newSensors = { ...sensors };
         let foundAny = false;
 
-        for (const subnet of subnets) {
-          const promises = [];
-          for (let i = 1; i < 255; i++) {
-            const ip = `${subnet}.${i}`;
-            const target = `http://${ip}/`;
-            promises.push((async () => {
-              try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 1500);
-                const res = await fetch(target, { signal: controller.signal, mode: 'cors' });
-                clearTimeout(timeoutId);
-                
-                if (res.ok) {
-                  const data = await res.json();
-                  if (data.id && data.lux !== undefined) {
-                    newSensors[data.id] = { name: data.name || 'Unknown Sensor', ip: ip, lastSeen: Date.now() };
-                    foundAny = true;
-                  }
-                }
-              } catch (e) {
-                // Ignore timeout or network errors
+        const testIp = async (ip: string) => {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000);
+            const res = await fetch(`http://${ip}/`, { signal: controller.signal, mode: 'cors' });
+            clearTimeout(timeoutId);
+            
+            if (res.ok) {
+              const data = await res.json();
+              if (data.id && data.lux !== undefined) {
+                newSensors[data.id] = { name: data.name || 'Unknown Sensor', ip: ip, lastSeen: Date.now() };
+                foundAny = true;
               }
-            })());
+            }
+          } catch (e) {
+            // Ignore timeout or network errors
           }
-          await Promise.allSettled(promises);
-          if (foundAny) break; // If we found on this subnet, no need to scan the others as aggressively
+        };
+
+        const batchSize = 40; // Prevent browser connection pooling from stalling requests
+        for (const subnet of subnets) {
+          if (foundAny) break; // found on this subnet, stop aggressive blanket scanning
+          
+          let i = 1;
+          while (i < 255) {
+            const batch = [];
+            for (let b = 0; b < batchSize && i < 255; b++, i++) {
+              batch.push(testIp(`${subnet}.${i}`));
+            }
+            await Promise.all(batch);
+          }
         }
 
         if (foundAny) {
@@ -422,51 +486,27 @@ export default function App() {
           <div className="space-y-[1vw]">
             <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Display</h3>
             <div className="grid grid-cols-4 gap-[2vw]">
-              <div className="space-y-[0.5vw]">
-                <div className="flex justify-between items-center text-[0.8vw] uppercase tracking-[0.3em] text-white/50 font-bold">
-                  <span>Brightness</span>
-                  <span className="text-[#A3B18A] font-mono text-[0.9vw]">{luminance}%</span>
-                </div>
-                <div className="relative h-[0.6vw] flex items-center">
-                  <input 
-                    type="range" min={0} max={100} value={luminance} 
-                    onChange={(e) => { const v = Number(e.target.value); setLuminance(v); saveProfile(v, warmth); resetMenuTimer(); }}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                  />
-                  <div className="w-full h-full bg-gradient-to-r from-black/50 to-white/50 rounded-full" />
-                  <div className="absolute w-[1.2vw] h-[1.2vw] rounded-full bg-[#D4CDA4] border-[0.2vw] border-[#1A1D14]" style={{ left: `calc(${luminance}% - 0.6vw)` }} />
-                </div>
-              </div>
-              <div className="space-y-[0.5vw]">
-                <div className="flex justify-between items-center text-[0.8vw] uppercase tracking-[0.3em] text-white/50 font-bold">
-                  <span>Temp</span>
-                  <span className="text-[#A3B18A] font-mono text-[0.9vw]">{warmth}K</span>
-                </div>
-                <div className="relative h-[0.6vw] flex items-center">
-                  <input 
-                    type="range" min={-500} max={500} value={warmth} 
-                    onChange={(e) => { const v = Number(e.target.value); setWarmth(v); saveProfile(luminance, v); resetMenuTimer(); }}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                  />
-                  <div className="w-full h-full bg-gradient-to-r from-blue-400/20 via-white/10 to-orange-400/20 rounded-full" />
-                  <div className="absolute w-[1.2vw] h-[1.2vw] rounded-full bg-[#FFB380] border-[0.2vw] border-[#1A1D14]" style={{ left: `calc(${50 + (warmth / 500) * 50}% - 0.6vw)` }} />
-                </div>
-              </div>
-              <div className="space-y-[0.5vw]">
-                <div className="flex justify-between items-center text-[0.8vw] uppercase tracking-[0.3em] text-white/50 font-bold">
-                  <span>Grain</span>
-                  <span className="text-[#A3B18A] font-mono text-[0.9vw]">{grainIntensity}%</span>
-                </div>
-                <div className="relative h-[0.6vw] flex items-center">
-                  <input 
-                    type="range" min={0} max={100} value={grainIntensity} 
-                    onChange={(e) => { setGrainIntensity(Number(e.target.value)); resetMenuTimer(); }}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                  />
-                  <div className="w-full h-full bg-gradient-to-r from-transparent to-white/30 rounded-full" />
-                  <div className="absolute w-[1.2vw] h-[1.2vw] rounded-full bg-[#A3B18A] border-[0.2vw] border-[#1A1D14]" style={{ left: `calc(${grainIntensity}% - 0.6vw)` }} />
-                </div>
-              </div>
+              <TvSlider 
+                label="Brightness" value={luminance} min={0} max={100} step={5} suffix="%"
+                onChange={(v: number) => { setLuminance(v); resetMenuTimer(); }}
+                onSave={(v: number) => saveProfile(v, warmth)}
+                gradientClasses="bg-gradient-to-r from-black/50 to-white/50"
+                thumbColor="#D4CDA4"
+              />
+              <TvSlider 
+                label="Temp" value={warmth} min={-500} max={500} step={50} suffix="K"
+                onChange={(v: number) => { setWarmth(v); resetMenuTimer(); }}
+                onSave={(v: number) => saveProfile(luminance, v)}
+                gradientClasses="bg-gradient-to-r from-blue-400/20 via-white/10 to-orange-400/20"
+                thumbColor="#FFB380"
+                thumbLeftCalc={`calc(${50 + (warmth / 500) * 50}% - 0.6vw)`}
+              />
+              <TvSlider 
+                label="Grain" value={grainIntensity} min={0} max={100} step={5} suffix="%"
+                onChange={(v: number) => { setGrainIntensity(v); resetMenuTimer(); }}
+                gradientClasses="bg-gradient-to-r from-transparent to-white/30"
+                thumbColor="#A3B18A"
+              />
               <div className="flex gap-[1vw]">
                 <button 
                   onClick={() => { setShowClock(!showClock); resetMenuTimer(); }} 
@@ -524,7 +564,7 @@ export default function App() {
             <div className="flex justify-between items-center border-b border-white/10 pb-[0.5vw]">
               <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-none pb-0">Sensors & Telemetry</h3>
               <button onClick={() => { setIsScanning(true); resetMenuTimer(); }} className="text-[0.6vw] flex items-center gap-[0.5vw] uppercase tracking-widest text-[#D4CDA4] hover:text-white transition-colors">
-                <Search className={`w-[1vw] h-[1vw] ${isScanning ? 'animate-spin' : ''}`} />
+                {isScanning ? <Loader2 className="w-[1vw] h-[1vw] animate-spin" /> : <Search className="w-[1vw] h-[1vw]" />}
                 {isScanning ? 'Scanning...' : 'Rescan'}
               </button>
             </div>
@@ -535,6 +575,12 @@ export default function App() {
                     <p className="font-bold text-[#D4CDA4]">No Sensors Found</p>
                     <p className="text-[0.7vw] text-white/40 leading-relaxed max-w-[80%] mt-[0.5vw]">Please connect your phone to "Ambient Setup" to set up your ambient sensor.</p>
                     
+                    {window.location.protocol === 'https:' && (
+                      <p className="text-[0.6vw] text-red-400/80 leading-relaxed max-w-[80%] mt-[0.5vw] normal-case bg-red-400/10 p-[0.5vw] rounded">
+                        Auto-discovery is blocked by your browser because this app is on HTTPS. Use the manual IP below.
+                      </p>
+                    )}
+
                     <div className="mt-[1vw] flex gap-[0.5vw] items-center w-full max-w-[70%]">
                       <input 
                         type="text" 
