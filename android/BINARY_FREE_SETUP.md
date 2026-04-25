@@ -1,0 +1,19 @@
+# Binary-free Android folder notes
+
+This repository intentionally excludes binary assets (PNG launcher/splash files and `gradle-wrapper.jar`) so PR systems that reject binary diffs can accept changes.
+
+## How to restore a fully buildable Android project locally
+
+1. Recreate Android resources from Capacitor defaults:
+   - `npx cap sync android`
+2. Regenerate launcher/splash assets (Android Studio Image Asset / Splash tooling) if needed.
+3. Restore Gradle wrapper JAR (optional for CI):
+   - `./gradlew` now uses system `gradle` if present, otherwise auto-downloads `gradle-wrapper.jar` if missing.
+   - You can also regenerate manually: `cd android && gradle wrapper`.
+
+## Included native functionality
+
+Even without binary resources committed, native source/config changes remain in the repo:
+- `AmbientDreamService` screensaver service.
+- TV launcher + dream service + location/network permissions in `AndroidManifest.xml`.
+- MainActivity geolocation WebChromeClient handling.

@@ -5,9 +5,9 @@ const config: CapacitorConfig = {
   appName: 'Ambient Canvas',
   webDir: 'dist',
   server: {
-    androidScheme: 'https',
-    cleartext: true, // Required to fetch data from local Arduino IP (http://10.0.0.60)
-    allowNavigation: ['10.0.0.60']
+    androidScheme: 'http',
+    cleartext: true,
+    allowNavigation: ['*']
   },
   android: {
     allowMixedContent: true
