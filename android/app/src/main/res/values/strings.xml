@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Ambient Canvas</string>
+    <string name="title_activity_main">Ambient Canvas</string>
+    <string name="ambient_dream_title">Ambient Canvas Screensaver</string>
+    <string name="package_name">com.ambient.canvas.overlay</string>
+    <string name="custom_url_scheme">com.ambient.canvas.overlay</string>
+</resources>
