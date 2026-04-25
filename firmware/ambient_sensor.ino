@@ -9,7 +9,6 @@
 WebServer server(80);
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_50MS, TCS34725_GAIN_4X);
 Preferences preferences;
-WiFiManager wm;
 
 const int motionPin = 27;
 
@@ -89,7 +88,8 @@ void handleRename() {
 
 void setupNetwork() {
   WiFi.mode(WIFI_AP_STA);
-  wm.setConfigPortalBlocking(false);
+
+  WiFiManager wm;
   wm.setConfigPortalTimeout(180);
 
   WiFiManagerParameter custom_room_name("room", "Sensor Location (e.g., Living Room)", roomName.c_str(), 24);
@@ -124,7 +124,7 @@ void setupNetwork() {
 
   String apSsid = roomName;
   if (apSsid.length() > 31) apSsid = apSsid.substring(0, 31);
-  bool portalStarted = wm.startConfigPortal(apSsid.c_str());
+  WiFi.softAP(apSsid.c_str());
 
   Serial.println("\n--- CONNECTED! ---");
   Serial.print("Room Name Saved As: ");
@@ -133,9 +133,7 @@ void setupNetwork() {
   Serial.println(WiFi.localIP());
   Serial.print("WiFi AP SSID: ");
   Serial.println(apSsid);
-  Serial.print("Config Portal Running: ");
-  Serial.println(portalStarted ? "YES" : "NO");
-  Serial.print("Config Portal IP: ");
+  Serial.print("WiFi AP IP: ");
   Serial.println(WiFi.softAPIP());
 }
 
@@ -181,8 +179,8 @@ void setup() {
 }
 
 void loop() {
-  wm.process();
   server.handleClient();
+  MDNS.update();
 
   if (millis() - lastReadTime > 500) {
     uint16_t r, g, b, c;
