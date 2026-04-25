@@ -4,7 +4,6 @@
 #include <ESPmDNS.h>
 #include <WiFiManager.h>
 #include <Preferences.h>
-#include <ArduinoJson.h>
 #include "Adafruit_TCS34725.h"
 
 WebServer server(80);
@@ -26,6 +25,8 @@ String roomName = "New Sensor";
 String buildBroadcastName(const String &baseName) {
   String trimmed = baseName;
   trimmed.trim();
+  trimmed.replace("\"", "");
+  trimmed.replace("\\", "");
   if (trimmed.length() == 0) trimmed = "New Sensor";
   if (trimmed.length() > 24) trimmed = trimmed.substring(0, 24);
   return trimmed + " - ambient tv sensor";
@@ -44,17 +45,14 @@ void handleOptions() {
 
 void handleRoot() {
   sendCors();
-
-  DynamicJsonDocument doc(256);
-  doc["id"] = macAddress;
-  doc["name"] = roomName;
-  doc["lux"] = currentLux;
-  doc["temp"] = currentTemp;
-  doc["motion"] = isMotion;
-  doc["hostname"] = hostName;
-
-  String json;
-  serializeJson(doc, json);
+  String json = "{";
+  json += "\"id\":\"" + macAddress + "\",";
+  json += "\"name\":\"" + roomName + "\",";
+  json += "\"lux\":" + String(currentLux) + ",";
+  json += "\"temp\":" + String(currentTemp) + ",";
+  json += "\"motion\":" + String(isMotion ? "true" : "false") + ",";
+  json += "\"hostname\":\"" + hostName + "\"";
+  json += "}";
   server.send(200, "application/json", json);
 }
 
@@ -66,22 +64,22 @@ void handleRename() {
     return;
   }
 
-  DynamicJsonDocument input(256);
-  auto err = deserializeJson(input, server.arg("plain"));
-  if (err || !input["name"].is<const char *>()) {
+  String body = server.arg("plain");
+  int keyIndex = body.indexOf("\"name\"");
+  if (keyIndex < 0) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"missing name field\"}");
+    return;
+  }
+  int firstQuote = body.indexOf('"', body.indexOf(':', keyIndex) + 1);
+  int secondQuote = body.indexOf('"', firstQuote + 1);
+  if (firstQuote < 0 || secondQuote < 0 || secondQuote <= firstQuote) {
     server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid json\"}");
     return;
   }
-
-  roomName = buildBroadcastName(String(input["name"].as<const char *>()));
+  String requestedName = body.substring(firstQuote + 1, secondQuote);
+  roomName = buildBroadcastName(requestedName);
   preferences.putString("room", roomName);
-
-  DynamicJsonDocument out(128);
-  out["ok"] = true;
-  out["name"] = roomName;
-
-  String payload;
-  serializeJson(out, payload);
+  String payload = "{\"ok\":true,\"name\":\"" + roomName + "\"}";
   server.send(200, "application/json", payload);
 
   Serial.print("[RENAME] Updated sensor name: ");
