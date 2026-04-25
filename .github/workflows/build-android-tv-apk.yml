@@ -42,6 +42,12 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # ─── Gradle CLI (used to reconstruct wrapper JAR when binaries aren't committed) ──
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.14.3
+
       # ─── Install npm dependencies ─────────────────────────────────────────
       - name: Install dependencies
         run: npm ci
@@ -86,6 +92,38 @@ jobs:
 
           echo "Manifest after patch:"
           cat "$MANIFEST"
+
+
+      # ─── Recreate missing Gradle wrapper JAR (binary-free repo support) ─────────
+      - name: Recreate gradle-wrapper.jar when missing
+        run: |
+          WRAPPER_JAR="android/gradle/wrapper/gradle-wrapper.jar"
+          if [ -f "$WRAPPER_JAR" ]; then
+            echo "gradle-wrapper.jar already present"
+            exit 0
+          fi
+
+          GRADLE_BIN="$(command -v gradle || true)"
+          if [ -z "$GRADLE_BIN" ]; then
+            echo "Gradle CLI not found on PATH"
+            exit 1
+          fi
+
+          GRADLE_HOME="$(cd "$(dirname "$GRADLE_BIN")/.." && pwd)"
+          WRAPPER_MAIN_JAR=$(find "$GRADLE_HOME/lib/plugins" -maxdepth 1 -name 'gradle-wrapper-main-*.jar' | head -n 1)
+
+          if [ -z "$WRAPPER_MAIN_JAR" ]; then
+            echo "Unable to find gradle-wrapper-main-*.jar under $GRADLE_HOME/lib/plugins"
+            exit 1
+          fi
+
+          mkdir -p android/gradle/wrapper
+          TMP_DIR=$(mktemp -d)
+          (cd "$TMP_DIR" && jar xf "$WRAPPER_MAIN_JAR" gradle-wrapper.jar)
+          mv "$TMP_DIR/gradle-wrapper.jar" "$WRAPPER_JAR"
+
+          echo "Recreated $WRAPPER_JAR from $WRAPPER_MAIN_JAR"
+          ls -l "$WRAPPER_JAR"
 
       # ─── Make Gradle wrapper executable ──────────────────────────────────
       - name: Make gradlew executable
