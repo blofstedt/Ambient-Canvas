@@ -19,6 +19,7 @@ interface RoomProfile {
 interface SensorInfo {
   name: string;
   ip: string;
+  hostname?: string;
   lastSeen: number;
 }
 
@@ -92,6 +93,9 @@ const TvSlider = ({ label, value, min, max, step, suffix, onChange, onSave, grad
 };
 
 export default function App() {
+  const WEATHER_DISABLED_LABEL = 'Weather Off';
+  const WEATHER_LOCATING_LABEL = 'Locating...';
+
   // Telemetry & Discovery (Multiple Sensors)
   const [sensors, setSensors] = useState<Record<string, SensorInfo>>(() => {
     try {
@@ -130,7 +134,7 @@ export default function App() {
     const saved = localStorage.getItem('ambient_show_weather_v1');
     return saved === 'true';
   });
-  const [weatherLocation, setWeatherLocation] = useState('Enable weather to get local forecast');
+  const [weatherLocation, setWeatherLocation] = useState(WEATHER_DISABLED_LABEL);
   const [weatherTemp, setWeatherTemp] = useState<number | null>(null);
   const [weatherCode, setWeatherCode] = useState<number>(0);
   const [imageSource, setImageSource] = useState<'curated' | 'local'>('curated');
@@ -139,6 +143,15 @@ export default function App() {
   const [localFiles, setLocalFiles] = useState<string[]>([]);
 
   const [time, setTime] = useState(new Date());
+
+  const shortLocationName = (city?: string, subdivision?: string, countryCode?: string) => {
+    const primary = (city || '').trim();
+    const secondary = (subdivision || countryCode || '').trim();
+    const full = [primary, secondary].filter(Boolean).join(', ');
+    if (!full) return 'Unknown Location';
+    if (full.length <= 22) return full;
+    return `${full.slice(0, 21).trimEnd()}…`;
+  };
 
   const requestWeatherPermission = async (): Promise<boolean> => {
     if (!("geolocation" in navigator)) {
@@ -171,7 +184,7 @@ export default function App() {
           const geoRes = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
           const geoData = await geoRes.json();
           if (geoData.city || geoData.locality) {
-            setWeatherLocation(`${geoData.city || geoData.locality}, ${geoData.principalSubdivision || geoData.countryCode}`);
+            setWeatherLocation(shortLocationName(geoData.city || geoData.locality, geoData.principalSubdivisionCode || geoData.principalSubdivision, geoData.countryCode));
           } else {
             setWeatherLocation('Unknown Location');
           }
@@ -196,9 +209,10 @@ export default function App() {
     localStorage.setItem('ambient_show_weather_v1', String(showWeather));
     if (!showWeather) {
       setWeatherTemp(null);
-      setWeatherLocation('Enable weather to get local forecast');
+      setWeatherLocation(WEATHER_DISABLED_LABEL);
       return;
     }
+    setWeatherLocation(WEATHER_LOCATING_LABEL);
     fetchWeather();
     const interval = setInterval(fetchWeather, 15 * 60 * 1000); // refresh every 15 min
     return () => clearInterval(interval);
@@ -212,6 +226,7 @@ export default function App() {
   const motionTimerRef = useRef<NodeJS.Timeout | null>(null);
   const uiTimerRef = useRef<NodeJS.Timeout | null>(null);
   const menuTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const ignoreNextPopStateRef = useRef(false);
 
   // Appearance Settings
   const [grainIntensity, setGrainIntensity] = useState(45);
@@ -237,6 +252,34 @@ export default function App() {
     localStorage.setItem('ambient_pending_renames_v1', JSON.stringify(queue));
   };
 
+  const getSensorTargets = (sensor: SensorInfo) => {
+    const targets = new Set<string>();
+    if (sensor.ip) targets.add(sensor.ip);
+    if (sensor.hostname) {
+      targets.add(sensor.hostname);
+      targets.add(`${sensor.hostname}.local`);
+    }
+    return Array.from(targets);
+  };
+
+  const fetchSensorJson = async (sensor: SensorInfo, timeoutMs = 1500) => {
+    const targets = getSensorTargets(sensor);
+    for (const target of targets) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        const res = await fetch(`http://${target}/`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (!res.ok) continue;
+        const data = await res.json();
+        return { data, target };
+      } catch {
+        // try next target
+      }
+    }
+    return null;
+  };
+
   const normalizeSensorName = (name: string) => {
     const cleaned = name.trim().replace(/\s+/g, ' ').slice(0, 24);
     if (!cleaned) return '';
@@ -257,12 +300,19 @@ export default function App() {
     saveSensors(optimisticSensors);
 
     try {
-      const res = await fetch(`http://${sensor.ip}/api/name`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: formattedName })
-      });
-      if (!res.ok) throw new Error('rename failed');
+      let renameOk = false;
+      for (const target of getSensorTargets(sensor)) {
+        const res = await fetch(`http://${target}/api/name`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: formattedName })
+        });
+        if (res.ok) {
+          renameOk = true;
+          break;
+        }
+      }
+      if (!renameOk) throw new Error('rename failed');
       const queue = { ...pendingRenames };
       delete queue[sensorId];
       savePendingRenames(queue);
@@ -277,12 +327,19 @@ export default function App() {
     if (!sensor || !pendingName) return;
 
     try {
-      const res = await fetch(`http://${sensor.ip}/api/name`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: pendingName })
-      });
-      if (!res.ok) return;
+      let renameOk = false;
+      for (const target of getSensorTargets(sensor)) {
+        const res = await fetch(`http://${target}/api/name`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: pendingName })
+        });
+        if (res.ok) {
+          renameOk = true;
+          break;
+        }
+      }
+      if (!renameOk) return;
       const queue = { ...pendingRenames };
       delete queue[sensorId];
       savePendingRenames(queue);
@@ -336,25 +393,37 @@ export default function App() {
     if (isScanning) {
       setDiscoveryState('searching');
       const scanNetwork = async () => {
-        const knownSubnets = Object.values(sensors)
+        const sensorList = Object.values(sensors) as SensorInfo[];
+        const knownSubnets = sensorList
           .map((sensor) => sensor.ip.split('.').slice(0, 3).join('.'))
           .filter((subnet) => subnet.split('.').length === 3);
+        const knownTargets = new Set<string>();
+        sensorList.forEach((sensor) => {
+          getSensorTargets(sensor).forEach((target) => knownTargets.add(target));
+        });
         const fallbackSubnets = ['192.168.1', '192.168.0', '192.168.86', '192.168.68', '192.168.50', '10.0.0', '192.168.254'];
         const subnets = [...new Set([...knownSubnets, ...fallbackSubnets])];
         const newSensors = { ...sensors };
         let foundAny = false;
 
-        const testIp = async (ip: string) => {
+        const testTarget = async (target: string) => {
           try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 2000);
-            const res = await fetch(`http://${ip}/`, { signal: controller.signal, mode: 'cors' });
+            const timeoutId = setTimeout(() => controller.abort(), 1200);
+            const res = await fetch(`http://${target}/`, { signal: controller.signal, mode: 'cors' });
             clearTimeout(timeoutId);
             
             if (res.ok) {
               const data = await res.json();
               if (data.id && data.lux !== undefined) {
-                newSensors[data.id] = { name: data.name || 'Unknown Sensor', ip: ip, lastSeen: Date.now() };
+                const existingSensor = newSensors[data.id];
+                const ipMatch = target.match(/^(\d{1,3}\.){3}\d{1,3}$/) ? target : (existingSensor?.ip || '');
+                newSensors[data.id] = {
+                  name: data.name || 'Unknown Sensor',
+                  ip: ipMatch,
+                  hostname: data.hostname || existingSensor?.hostname,
+                  lastSeen: Date.now()
+                };
                 foundAny = true;
               }
             }
@@ -363,15 +432,15 @@ export default function App() {
           }
         };
 
-        const batchSize = 64;
+        await Promise.all(Array.from(knownTargets).map((target) => testTarget(target)));
+
+        const batchSize = 32;
         for (const subnet of subnets) {
-          if (foundAny) break;
-          
           let i = 1;
           while (i < 255) {
             const batch = [];
             for (let b = 0; b < batchSize && i < 255; b++, i++) {
-              batch.push(testIp(`${subnet}.${i}`));
+              batch.push(testTarget(`${subnet}.${i}`));
             }
             await Promise.all(batch);
           }
@@ -396,26 +465,33 @@ export default function App() {
   }, [isScanning, sensors, selectedSensorId]);
 
   useEffect(() => {
+    if (isScanning) return;
+    const shouldRetryDiscovery = !selectedSensorId || discoveryState === 'lost';
+    if (!shouldRetryDiscovery) return;
+    const retryTimer = setTimeout(() => setIsScanning(true), 30000);
+    return () => clearTimeout(retryTimer);
+  }, [isScanning, selectedSensorId, discoveryState]);
+
+  useEffect(() => {
     if (!selectedSensorId || !sensors[selectedSensorId]) return;
 
     const fetchTelemetry = async () => {
       try {
-        const target = `http://${sensors[selectedSensorId].ip}`;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1500);
-        const res = await fetch(target, { signal: controller.signal });
-        clearTimeout(timeoutId);
-
-        if (res.ok) {
-          const data = await res.json();
+        const sensor = sensors[selectedSensorId];
+        const result = await fetchSensorJson(sensor);
+        if (result) {
+          const { data, target } = result;
           setTelemetry(data);
           if (data.id) {
             const existing = sensors[data.id];
             if (existing) {
+              const ipMatch = target.match(/^(\d{1,3}\.){3}\d{1,3}$/) ? target : existing.ip;
               const updated = {
                 ...sensors,
                 [data.id]: {
                   ...existing,
+                  ip: ipMatch,
+                  hostname: data.hostname || existing.hostname,
                   name: data.name || existing.name,
                   lastSeen: Date.now()
                 }
@@ -425,6 +501,8 @@ export default function App() {
           }
           setDiscoveryState('connected');
           flushPendingRename(selectedSensorId);
+        } else {
+          setDiscoveryState('lost');
         }
       } catch (e) {
         setDiscoveryState('lost');
@@ -497,20 +575,51 @@ export default function App() {
     if (showSettingsMenu) {
       if (menuTimerRef.current) clearTimeout(menuTimerRef.current);
       menuTimerRef.current = setTimeout(() => {
-        setShowSettingsMenu(false);
+        closeSettingsMenu();
       }, 10000);
     }
   };
+
+  const closeSettingsMenu = (syncHistory = true) => {
+    setShowSettingsMenu(false);
+    if (syncHistory && window.history.state?.ambientSettings) {
+      ignoreNextPopStateRef.current = true;
+      window.history.back();
+    }
+  };
+
+  useEffect(() => {
+    const onPopState = () => {
+      if (ignoreNextPopStateRef.current) {
+        ignoreNextPopStateRef.current = false;
+        return;
+      }
+      if (showSettingsMenu) {
+        setShowSettingsMenu(false);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [showSettingsMenu]);
 
   useEffect(() => {
     const handleActivity = (e?: KeyboardEvent) => {
       resetUiTimer();
       if (showSettingsMenu) resetMenuTimer();
+      const targetElement = e?.target as HTMLElement | null;
+      const isTypingTarget = !!targetElement && (
+        targetElement.tagName === 'INPUT' ||
+        targetElement.tagName === 'TEXTAREA' ||
+        targetElement.isContentEditable
+      );
       
       if (e?.key === 'ArrowLeft') {
         setArtIndex(prev => (prev - 1 + ARTWORK.length) % ARTWORK.length);
       } else if (e?.key === 'ArrowRight') {
         setArtIndex(prev => (prev + 1) % ARTWORK.length);
+      } else if (!isTypingTarget && (e?.key === 'Escape' || e?.key === 'Backspace') && showSettingsMenu) {
+        e.preventDefault();
+        closeSettingsMenu();
       }
     };
 
@@ -531,6 +640,9 @@ export default function App() {
 
   useEffect(() => {
     if (showSettingsMenu) {
+      if (!window.history.state?.ambientSettings) {
+        window.history.pushState({ ambientSettings: true }, '');
+      }
       resetMenuTimer();
     } else {
       if (menuTimerRef.current) clearTimeout(menuTimerRef.current);
@@ -605,7 +717,7 @@ export default function App() {
             </div>
             <div className="scale-[1.1] origin-right h-[3vw] flex items-center justify-end">{getWeatherIcon(weatherCode)}</div>
           </div>
-          <div className="text-[0.8vw] font-mono opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold">{weatherLocation}</div>
+          <div className="text-[0.8vw] font-mono opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold max-w-[18vw] truncate">{weatherLocation}</div>
         </div>
       </div>
       <div 
@@ -661,6 +773,7 @@ export default function App() {
                       setWeatherLocation('Location permission required');
                       alert('Weather cannot be enabled without location permission.');
                     } else {
+                      setWeatherLocation(WEATHER_LOCATING_LABEL);
                       setShowWeather(true);
                       fetchWeather();
                     }
@@ -751,7 +864,7 @@ export default function App() {
                       />
                     </div>
                   </div>
-                ) : Object.entries(sensors).map(([mac, sensor]) => (
+                ) : (Object.entries(sensors) as Array<[string, SensorInfo]>).map(([mac, sensor]) => (
                     <div key={mac} className={`p-[0.8vw] rounded-[0.5vw] mb-[0.5vw] border space-y-[0.7vw] ${selectedSensorId === mac ? 'bg-[#D4CDA4]/10 border-[#D4CDA4]' : 'border-white/5 hover:bg-white/10'}`}>
                       <div className="flex justify-between items-center gap-[0.8vw]">
                         <div className="flex flex-col">
