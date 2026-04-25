@@ -373,7 +373,7 @@ export default function App() {
             className="absolute inset-0 bg-center bg-cover transition-[filter] duration-1000"
             style={{ 
               backgroundImage: `url(${currentArt.url})`,
-              filter: `brightness(${0.3 + overlayOpacity * 0.7}) contrast(1.1) sepia(0.2)` 
+              filter: `brightness(${0.02 + overlayOpacity * 0.98}) contrast(1.1) sepia(0.2)` 
             }}
           >
             <div 
@@ -396,7 +396,10 @@ export default function App() {
       </AnimatePresence>
       <div className={`absolute inset-0 z-40 bg-black transition-opacity duration-[3000ms] pointer-events-none ${isScreenBlack ? 'opacity-100' : 'opacity-0'}`} />
       <div className="absolute inset-0 z-10 pointer-events-none shadow-[inset_0_0_300px_rgba(0,0,0,0.8)]" />
-      <div className={`absolute top-0 left-0 w-full p-[3vw] flex justify-between items-start z-30 transition-opacity duration-1000 pointer-events-none ${isScreenBlack ? 'opacity-0' : 'opacity-100'}`}>
+      <div 
+        className={`absolute top-0 left-0 w-full p-[3vw] flex justify-between items-start z-30 transition-all duration-1000 pointer-events-none ${isScreenBlack ? 'opacity-0' : ''}`}
+        style={{ opacity: isScreenBlack ? 0 : 0.15 + overlayOpacity * 0.85 }}
+      >
         <div className={`transition-opacity duration-700 ${showClock ? 'opacity-100' : 'opacity-0'}`}>
           <div className="text-[5vw] font-serif tracking-tighter text-[#EAE6DA] drop-shadow-2xl leading-none">{time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
           <div className="text-[0.8vw] font-mono opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold">{time.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
@@ -464,17 +467,17 @@ export default function App() {
                   <div className="absolute w-[1.2vw] h-[1.2vw] rounded-full bg-[#A3B18A] border-[0.2vw] border-[#1A1D14]" style={{ left: `calc(${grainIntensity}% - 0.6vw)` }} />
                 </div>
               </div>
-              <div className="flex gap-[1vw] h-full">
+              <div className="flex gap-[1vw]">
                 <button 
                   onClick={() => { setShowClock(!showClock); resetMenuTimer(); }} 
-                  className={`flex-1 h-full rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${showClock ? 'bg-[#D4CDA4]/10 border-[#D4CDA4] text-[#D4CDA4]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
+                  className={`flex-1 aspect-square rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${showClock ? 'bg-[#D4CDA4]/10 border-[#D4CDA4] text-[#D4CDA4]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
                 >
                   <Clock className="w-[1.2vw] h-[1.2vw]" />
                   <span className="text-[0.7vw] uppercase tracking-widest font-bold mt-[0.2vw]">Clock</span>
                 </button>
                 <button 
                   onClick={() => { setShowWeather(!showWeather); resetMenuTimer(); }} 
-                  className={`flex-1 h-full rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${showWeather ? 'bg-[#D4CDA4]/10 border-[#D4CDA4] text-[#D4CDA4]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
+                  className={`flex-1 aspect-square rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${showWeather ? 'bg-[#D4CDA4]/10 border-[#D4CDA4] text-[#D4CDA4]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
                 >
                   <Cloud className="w-[1.2vw] h-[1.2vw]" />
                   <span className="text-[0.7vw] uppercase tracking-widest font-bold mt-[0.2vw]">Weather</span>
