@@ -70,9 +70,4 @@ public class AmbientDreamService extends DreamService {
         }
         super.onDetachedFromWindow();
     }
-
-    @Override
-    public void onCreate(@Nullable Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-    }
 }
