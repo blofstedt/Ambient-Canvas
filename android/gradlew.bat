@@ -70,29 +70,10 @@ goto fail
 :execute
 @rem Setup the command line
 
-set WRAPPER_JAR=%APP_HOME%\gradle\wrapper\gradle-wrapper.jar
-set CLASSPATH=%WRAPPER_JAR%
-
-if exist "%WRAPPER_JAR%" goto runGradle
-
-where gradle >NUL 2>&1
-if %ERRORLEVEL% equ 0 (
-  echo gradle-wrapper.jar missing; delegating to system gradle...
-  gradle %*
-  goto end
-)
-
-echo gradle-wrapper.jar missing; bootstrapping wrapper jar...
-if not exist "%APP_HOME%\gradle\wrapper" mkdir "%APP_HOME%\gradle\wrapper"
-powershell -Command "try { Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/gradle/gradle/v8.14.3/gradle/wrapper/gradle-wrapper.jar' -OutFile '%WRAPPER_JAR%' -UseBasicParsing } catch { exit 1 }"
-if %ERRORLEVEL% neq 0 (
-  echo Failed to download gradle-wrapper.jar 1>&2
-  goto fail
-)
+set CLASSPATH=
 
 
 @rem Execute Gradle
- :runGradle
 "%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*
 
 :end

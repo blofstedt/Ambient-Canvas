@@ -7,9 +7,9 @@ This repository intentionally excludes binary assets (PNG launcher/splash files 
 1. Recreate Android resources from Capacitor defaults:
    - `npx cap sync android`
 2. Regenerate launcher/splash assets (Android Studio Image Asset / Splash tooling) if needed.
-3. Restore Gradle wrapper JAR (optional for CI):
-   - `./gradlew` now uses system `gradle` if present, otherwise auto-downloads `gradle-wrapper.jar` if missing.
-   - You can also regenerate manually: `cd android && gradle wrapper`.
+3. Restore Gradle wrapper JAR:
+   - `cd android && gradle wrapper`
+   - or run from Android Studio which will regenerate wrapper files.
 
 ## Included native functionality
 

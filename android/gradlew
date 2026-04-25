@@ -114,26 +114,7 @@ case "$( uname )" in                #(
   NONSTOP* )        nonstop=true ;;
 esac
 
-WRAPPER_JAR="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
-CLASSPATH="$WRAPPER_JAR"
-
-if [ ! -f "$WRAPPER_JAR" ] ; then
-    if command -v gradle >/dev/null 2>&1 ; then
-        warn "gradle-wrapper.jar missing; delegating to system gradle."
-        exec gradle "$@"
-    else
-        warn "gradle-wrapper.jar missing; bootstrapping wrapper jar..."
-        mkdir -p "$APP_HOME/gradle/wrapper" || die "Cannot create gradle wrapper directory."
-        WRAPPER_JAR_URL="https://raw.githubusercontent.com/gradle/gradle/v8.14.3/gradle/wrapper/gradle-wrapper.jar"
-        if command -v curl >/dev/null 2>&1 ; then
-            curl -fsSL "$WRAPPER_JAR_URL" -o "$WRAPPER_JAR" || die "Failed to download gradle-wrapper.jar with curl."
-        elif command -v wget >/dev/null 2>&1 ; then
-            wget -q "$WRAPPER_JAR_URL" -O "$WRAPPER_JAR" || die "Failed to download gradle-wrapper.jar with wget."
-        else
-            die "Neither gradle, curl nor wget is available to run without gradle-wrapper.jar."
-        fi
-    fi
-fi
+CLASSPATH="\\\"\\\""
 
 
 # Determine the Java command to use to start the JVM.
