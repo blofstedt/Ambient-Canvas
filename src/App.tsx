@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Eye, EyeOff, Image as ImageIcon, ChevronLeft, ChevronRight, Settings, Clock, Cloud, FolderOpen, Power, MonitorPlay, LayoutTemplate, Sun, CloudRain, CloudFog, CloudSnow, CloudLightning, CheckCircle2 } from 'lucide-react';
+import { Activity, Eye, EyeOff, Image as ImageIcon, ChevronLeft, ChevronRight, Settings, Clock, Cloud, FolderOpen, Power, MonitorPlay, LayoutTemplate, Sun, CloudRain, CloudFog, CloudSnow, CloudLightning, CheckCircle2, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Art Collection
@@ -162,11 +162,59 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (isScanning && Object.keys(sensors).length === 0) {
-      setIsScanning(false);
+    if (isScanning) {
       setDiscoveryState('searching');
+      const scanNetwork = async () => {
+        const subnets = ['192.168.1', '192.168.0', '192.168.50', '192.168.86', '10.0.0'];
+        const newSensors = { ...sensors };
+        let foundAny = false;
+
+        for (const subnet of subnets) {
+          const promises = [];
+          for (let i = 1; i < 255; i++) {
+            const ip = `${subnet}.${i}`;
+            const target = `http://${ip}/`;
+            promises.push((async () => {
+              try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 1500);
+                const res = await fetch(target, { signal: controller.signal, mode: 'cors' });
+                clearTimeout(timeoutId);
+                
+                if (res.ok) {
+                  const data = await res.json();
+                  if (data.id && data.lux !== undefined) {
+                    newSensors[data.id] = { name: data.name || 'Unknown Sensor', ip: ip, lastSeen: Date.now() };
+                    foundAny = true;
+                  }
+                }
+              } catch (e) {
+                // Ignore timeout or network errors
+              }
+            })());
+          }
+          await Promise.allSettled(promises);
+          if (foundAny) break; // If we found on this subnet, no need to scan the others as aggressively
+        }
+
+        if (foundAny) {
+          setSensors(newSensors);
+          localStorage.setItem('ambient_sensors_v2', JSON.stringify(newSensors));
+          if (!selectedSensorId) {
+            const firstId = Object.keys(newSensors)[0];
+            setSelectedSensorId(firstId);
+            localStorage.setItem('selected_sensor_id_v2', firstId);
+          }
+          setDiscoveryState('connected');
+        } else {
+          setDiscoveryState('lost');
+        }
+        setIsScanning(false);
+      };
+
+      scanNetwork();
     }
-  }, [isScanning, sensors]);
+  }, [isScanning]);
 
   useEffect(() => {
     if (!selectedSensorId || !sensors[selectedSensorId]) return;
@@ -470,13 +518,47 @@ export default function App() {
 
           {/* Power & Sensors Section */}
           <div className="space-y-[1vw]">
-            <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Sensors & Telemetry</h3>
+            <div className="flex justify-between items-center border-b border-white/10 pb-[0.5vw]">
+              <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-none pb-0">Sensors & Telemetry</h3>
+              <button onClick={() => { setIsScanning(true); resetMenuTimer(); }} className="text-[0.6vw] flex items-center gap-[0.5vw] uppercase tracking-widest text-[#D4CDA4] hover:text-white transition-colors">
+                <Search className={`w-[1vw] h-[1vw] ${isScanning ? 'animate-spin' : ''}`} />
+                {isScanning ? 'Scanning...' : 'Rescan'}
+              </button>
+            </div>
             <div className="grid grid-cols-2 gap-[2vw]">
               <div className="bg-white/5 p-[1.5vw] rounded-[1vw]">
                 {Object.keys(sensors).length === 0 ? (
                   <div className="flex flex-col items-center justify-center text-white/60 text-[0.8vw] uppercase text-center h-full gap-[0.5vw]">
                     <p className="font-bold text-[#D4CDA4]">No Sensors Found</p>
-                    <p className="text-[0.7vw] text-white/40 leading-relaxed max-w-[80%] mt-[0.5vw]">Please connect your phone to "Ambient Setup" to set up your ambient sensor</p>
+                    <p className="text-[0.7vw] text-white/40 leading-relaxed max-w-[80%] mt-[0.5vw]">Please connect your phone to "Ambient Setup" to set up your ambient sensor.</p>
+                    
+                    <div className="mt-[1vw] flex gap-[0.5vw] items-center w-full max-w-[70%]">
+                      <input 
+                        type="text" 
+                        placeholder="Manual IP (e.g. 192.168.1.50)" 
+                        className="bg-black/30 border border-white/10 rounded-[0.5vw] px-[0.8vw] py-[0.5vw] text-[0.7vw] font-mono text-white/80 w-full focus:outline-none focus:border-[#D4CDA4]/50"
+                        onKeyDown={async (e) => {
+                          if (e.key === 'Enter') {
+                            const val = e.currentTarget.value.trim();
+                            if (val) {
+                              try {
+                                const res = await fetch(`http://${val}/`);
+                                const data = await res.json();
+                                if (data.id) {
+                                  const newSensors = { ...sensors, [data.id]: { name: data.name || 'Manual Sensor', ip: val, lastSeen: Date.now() } };
+                                  setSensors(newSensors);
+                                  localStorage.setItem('ambient_sensors_v2', JSON.stringify(newSensors));
+                                  setSelectedSensorId(data.id);
+                                  localStorage.setItem('selected_sensor_id_v2', data.id);
+                                }
+                              } catch(err) {
+                                alert("Could not connect to sensor at " + val);
+                              }
+                            }
+                          }
+                        }}
+                      />
+                    </div>
                   </div>
                 ) : Object.entries(sensors).map(([mac, sensor]: [string, any]) => (
                     <div key={mac} className={`flex justify-between items-center p-[0.8vw] rounded-[0.5vw] mb-[0.5vw] border ${selectedSensorId === mac ? 'bg-[#D4CDA4]/10 border-[#D4CDA4]' : 'border-white/5 hover:bg-white/10'}`}>
