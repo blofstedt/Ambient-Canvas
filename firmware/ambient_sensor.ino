@@ -180,6 +180,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  MDNS.update();
 
   if (millis() - lastReadTime > 500) {
     uint16_t r, g, b, c;
