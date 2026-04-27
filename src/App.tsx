@@ -1,942 +1,576 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Eye, EyeOff, Image as ImageIcon, ChevronLeft, ChevronRight, Settings, Clock, Cloud, FolderOpen, Power, MonitorPlay, LayoutTemplate, Sun, CloudRain, CloudFog, CloudSnow, CloudLightning, CheckCircle2, Search, Loader2 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion';
 
-// Art Collection
-const ARTWORK = [
-  { id: 1, title: "The Starry Night", artist: "Vincent van Gogh", url: "https://images.unsplash.com/photo-1541963463532-d68292c34b19?auto=format&fit=crop&q=80&w=1920" },
-  { id: 2, title: "Impression, Sunrise", artist: "Claude Monet", url: "https://images.unsplash.com/photo-1579783902614-a3fb3927b6a5?auto=format&fit=crop&q=80&w=1920" },
-  { id: 3, title: "The Great Wave", artist: "Hokusai", url: "https://images.unsplash.com/photo-1549490349-8643362247b5?auto=format&fit=crop&q=80&w=1920" },
-  { id: 4, title: "Wanderer above the Sea of Fog", artist: "Caspar David Friedrich", url: "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&q=80&w=1920" },
-  { id: 5, title: "View of Delft", artist: "Johannes Vermeer", url: "https://images.unsplash.com/photo-1582555172866-f73bb12a2ab3?auto=format&fit=crop&q=80&w=1920" }
-];
+/* ------------------------------------------------------------------ */
+/*  Constants                                                           */
+/* ------------------------------------------------------------------ */
+const BIGDATACLOUD_REVERSE_URL = 'https://api.bigdatacloud.net/data/reverse-geocode-client';
+const WEATHER_API_URL = 'https://api.open-meteo.com/v1/forecast';
+const SENSOR_POLL_INTERVAL = 2000;       // ms between sensor polls
+const SCAN_TIMEOUT = 3000;               // ms to wait for mDNS before IP scan
+const LOCATION_TIMEOUT = 5000;           // ms for geolocation request
+const MAX_SCAN_PARALLEL = 10;            // max concurrent HTTP probes during IP scan
 
-interface RoomProfile {
-  luminance: number;
-  warmth: number;
-}
-
+/* ------------------------------------------------------------------ */
+/*  Sensor Discovery & Polling Hook                                     */
+/* ------------------------------------------------------------------ */
 interface SensorInfo {
+  id: string;
   name: string;
-  ip: string;
-  hostname?: string;
-  lastSeen: number;
+  hostname: string;      // mDNS hostname (e.g., amb-aabbccddee.local)
+  ip: string;            // direct IP fallback
+  lastLux: number;
+  lastTemp: number;
+  lastMotion: boolean;
+  online: boolean;
 }
 
-type PendingRenameQueue = Record<string, string>;
+function useSensors() {
+  const [sensors, setSensors] = useState<SensorInfo[]>([]);
+  const scanningRef = useRef(false);
 
-const TvSlider = ({ label, value, min, max, step, suffix, onChange, onSave, gradientClasses, thumbColor, thumbLeftCalc }: any) => {
-  const [isEditing, setIsEditing] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  return (
-    <div className="space-y-[0.5vw]">
-      <div className="flex justify-between items-center text-[0.8vw] uppercase tracking-[0.3em] text-white/50 font-bold">
-        <span>{label} {isEditing && <span className="text-white animate-pulse ml-2">(EDIT)</span>}</span>
-        <span className="text-[#A3B18A] font-mono text-[0.9vw]">{value}{suffix}</span>
-      </div>
-      <div 
-        ref={containerRef}
-        tabIndex={0}
-        className={`relative h-[1vw] flex items-center rounded-full transition-all cursor-pointer outline-none select-none ${isEditing ? 'ring-[0.2vw] ring-white scale-[1.02]' : 'focus:ring-[0.2vw] focus:ring-[#D4CDA4]/70'}`}
-        onClick={() => {
-          if (!isEditing) {
-            setIsEditing(true);
-            containerRef.current?.focus();
-          }
-        }}
-        onBlur={() => {
-          setIsEditing(false);
-          if (onSave) onSave(value);
-        }}
-        onKeyDown={(e) => {
-          if (!isEditing) {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              e.stopPropagation();
-              setIsEditing(true);
-            }
-          } else {
-            if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'Backspace') {
-              e.preventDefault();
-              e.stopPropagation();
-              setIsEditing(false);
-              if (onSave) onSave(value);
-            } else if (e.key === 'ArrowLeft') {
-              e.preventDefault();
-              e.stopPropagation();
-              onChange(Math.max(min, value - step));
-            } else if (e.key === 'ArrowRight') {
-              e.preventDefault();
-              e.stopPropagation();
-              onChange(Math.min(max, value + step));
-            } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-              // Prevent losing focus accidentally while editing
-              e.preventDefault();
-              e.stopPropagation();
-            }
-          }
-        }}
-      >
-        <div className={`w-full h-[0.6vw] rounded-full relative ${gradientClasses}`}>
-          <div 
-            className="absolute top-1/2 -translate-y-1/2 w-[1.2vw] h-[1.2vw] rounded-full border-[0.2vw] border-[#1A1D14] transition-all duration-200 pointer-events-none" 
-            style={{ 
-              backgroundColor: thumbColor,
-              left: thumbLeftCalc || `calc(${((value - min) / (max - min)) * 100}% - 0.6vw)` 
-            }} 
-          />
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default function App() {
-  const WEATHER_DISABLED_LABEL = 'Weather Off';
-  const WEATHER_LOCATING_LABEL = 'Locating...';
-
-  // Telemetry & Discovery (Multiple Sensors)
-  const [sensors, setSensors] = useState<Record<string, SensorInfo>>(() => {
+  // --- mDNS discovery (with TXT record reading) ---
+  const discoverMdns = useCallback(async () => {
+    // @ts-ignore – mDNS API may not be typed
+    if (!window.mdns || typeof window.mdns.discover !== 'function') return [];
     try {
-      const saved = localStorage.getItem('ambient_sensors_v2');
-      return saved ? JSON.parse(saved) : {};
-    } catch { return {}; }
-  });
-  const [pendingRenames, setPendingRenames] = useState<PendingRenameQueue>(() => {
-    try {
-      const saved = localStorage.getItem('ambient_pending_renames_v1');
-      return saved ? JSON.parse(saved) : {};
-    } catch { return {}; }
-  });
-  const [selectedSensorId, setSelectedSensorId] = useState<string>(() => localStorage.getItem('selected_sensor_id_v2') || '');
-  const [telemetry, setTelemetry] = useState({ lux: 15, temp: 2800, motion: true });
-  const [isScanning, setIsScanning] = useState(true);
-  const [discoveryState, setDiscoveryState] = useState<'searching' | 'connected' | 'lost'>('searching');
-  
-  // Gallery State
-  const [artIndex, setArtIndex] = useState(0);
-  const [showSettingsMenu, setShowSettingsMenu] = useState(false);
-  const [isScreenBlack, setIsScreenBlack] = useState(false);
-  const [uiVisible, setUiVisible] = useState(true);
-  const [isStatic, setIsStatic] = useState(false);
-  const [rotationInterval, setRotationInterval] = useState(10); // in minutes
-
-  // Power & Motion Settings
-  const [powerSafeAction, setPowerSafeAction] = useState<'black' | 'off'>('black');
-  const [powerSafeMinutes, setPowerSafeMinutes] = useState(2);
-  const [motionSensitivity, setMotionSensitivity] = useState(3); // Consecutive samples needed
-  const motionHistoryRef = useRef<boolean[]>([]);
-
-  // UI Overlays & Sources
-  const [showClock, setShowClock] = useState(true);
-  const [showWeather, setShowWeather] = useState<boolean>(() => {
-    const saved = localStorage.getItem('ambient_show_weather_v1');
-    return saved === 'true';
-  });
-  const [weatherLocation, setWeatherLocation] = useState(WEATHER_DISABLED_LABEL);
-  const [weatherTemp, setWeatherTemp] = useState<number | null>(null);
-  const [weatherCode, setWeatherCode] = useState<number>(0);
-  const [imageSource, setImageSource] = useState<'curated' | 'local'>('curated');
-  
-  // Custom Media Sources
-  const [localFiles, setLocalFiles] = useState<string[]>([]);
-
-  const [time, setTime] = useState(new Date());
-
-  const shortLocationName = (city?: string, subdivision?: string, countryCode?: string) => {
-    const primary = (city || '').trim();
-    const secondary = (subdivision || countryCode || '').trim();
-    const full = [primary, secondary].filter(Boolean).join(', ');
-    if (!full) return 'Unknown Location';
-    if (full.length <= 22) return full;
-    return `${full.slice(0, 21).trimEnd()}…`;
-  };
-
-  const requestWeatherPermission = async (): Promise<boolean> => {
-    if (!("geolocation" in navigator)) {
-      setWeatherLocation("Location Unavailable");
-      return false;
-    }
-
-    return new Promise((resolve) => {
-      navigator.geolocation.getCurrentPosition(
-        () => resolve(true),
-        () => resolve(false),
-        { enableHighAccuracy: false, timeout: 7000, maximumAge: 60_000 }
-      );
-    });
-  };
-
-  const fetchWeather = async () => {
-    try {
-      if (!("geolocation" in navigator)) {
-        setWeatherLocation("Location Unavailable");
-        setWeatherTemp(null);
-        return;
-      }
-
-      navigator.geolocation.getCurrentPosition(async (position) => {
-        const lat = position.coords.latitude;
-        const lon = position.coords.longitude;
-        
-        try {
-          const geoRes = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
-          const geoData = await geoRes.json();
-          if (geoData.city || geoData.locality) {
-            setWeatherLocation(shortLocationName(geoData.city || geoData.locality, geoData.principalSubdivisionCode || geoData.principalSubdivision, geoData.countryCode));
-          } else {
-            setWeatherLocation('Unknown Location');
-          }
-        } catch {
-          setWeatherLocation('Location Found');
-        }
-
-        const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&temperature_unit=celsius`);
-        const data = await weatherRes.json();
-        setWeatherTemp(Math.round(data.current_weather.temperature));
-        setWeatherCode(data.current_weather.weathercode);
-      }, () => {
-        setWeatherLocation("Location Access Denied");
-        setWeatherTemp(null);
-      }, { enableHighAccuracy: false, timeout: 7000, maximumAge: 60_000 });
+      const services: any[] = await new Promise((resolve, reject) => {
+        // @ts-ignore
+        window.mdns.discover('_http._tcp', { timeout: SCAN_TIMEOUT }, (error: any, services: any) => {
+          error ? reject(error) : resolve(services);
+        });
+      });
+      return services
+        .filter((s: any) => s.txt?.id) // only our sensors have an 'id' TXT record
+        .map((s: any) => ({
+          id: s.txt?.id || '',
+          name: s.txt?.name || 'New Sensor',
+          hostname: s.host?.replace(/\.local$/, '') || '',
+          ip: s.addresses?.[0] || '',
+          lastLux: 0,
+          lastTemp: 0,
+          lastMotion: false,
+          online: true,
+        }));
     } catch (e) {
-      console.error("Weather fetch error", e);
+      console.error('[mDNS] discovery failed', e);
+      return [];
     }
-  };
-
-  useEffect(() => {
-    localStorage.setItem('ambient_show_weather_v1', String(showWeather));
-    if (!showWeather) {
-      setWeatherTemp(null);
-      setWeatherLocation(WEATHER_DISABLED_LABEL);
-      return;
-    }
-    setWeatherLocation(WEATHER_LOCATING_LABEL);
-    fetchWeather();
-    const interval = setInterval(fetchWeather, 15 * 60 * 1000); // refresh every 15 min
-    return () => clearInterval(interval);
-  }, [showWeather]);
-
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(timer);
   }, []);
 
-  const motionTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const uiTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const menuTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const ignoreNextPopStateRef = useRef(false);
-
-  // Appearance Settings
-  const [grainIntensity, setGrainIntensity] = useState(45);
-  const [luminance, setLuminance] = useState(60);
-  const [warmth, setWarmth] = useState(200);
-
-  const getWeatherIcon = (code: number) => {
-    if (code === 0) return <Sun className="w-10 h-10 opacity-90 text-[#D4CDA4]" />;
-    if (code < 4) return <Cloud className="w-10 h-10 opacity-90 text-[#D4CDA4]" />;
-    if (code < 50) return <CloudFog className="w-10 h-10 opacity-90 text-[#D4CDA4]" />;
-    if (code < 70 || (code >= 80 && code <= 82)) return <CloudRain className="w-10 h-10 opacity-90 text-[#D4CDA4]" />;
-    if (code < 80 || code >= 85) return <CloudSnow className="w-10 h-10 opacity-90 text-[#D4CDA4]" />;
-    return <CloudLightning className="w-10 h-10 opacity-90 text-[#D4CDA4]" />;
-  };
-
-  const saveSensors = (updatedSensors: Record<string, SensorInfo>) => {
-    setSensors(updatedSensors);
-    localStorage.setItem('ambient_sensors_v2', JSON.stringify(updatedSensors));
-  };
-
-  const savePendingRenames = (queue: PendingRenameQueue) => {
-    setPendingRenames(queue);
-    localStorage.setItem('ambient_pending_renames_v1', JSON.stringify(queue));
-  };
-
-  const getSensorTargets = (sensor: SensorInfo) => {
-    const targets = new Set<string>();
-    if (sensor.ip) targets.add(sensor.ip);
-    if (sensor.hostname) {
-      targets.add(sensor.hostname);
-      targets.add(`${sensor.hostname}.local`);
-    }
-    return Array.from(targets);
-  };
-
-  const fetchSensorJson = async (sensor: SensorInfo, timeoutMs = 1500) => {
-    const targets = getSensorTargets(sensor);
-    for (const target of targets) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-        const res = await fetch(`http://${target}/`, { signal: controller.signal });
-        clearTimeout(timeoutId);
-        if (!res.ok) continue;
-        const data = await res.json();
-        return { data, target };
-      } catch {
-        // try next target
-      }
-    }
-    return null;
-  };
-
-  const normalizeSensorName = (name: string) => {
-    const cleaned = name.trim().replace(/\s+/g, ' ').slice(0, 24);
-    if (!cleaned) return '';
-    return `${cleaned} - ambient tv sensor`;
-  };
-
-  const updateSensorName = async (sensorId: string, newNameRaw: string) => {
-    const sensor = sensors[sensorId];
-    if (!sensor) return;
-
-    const formattedName = normalizeSensorName(newNameRaw);
-    if (!formattedName) {
-      alert('Please enter a valid sensor name.');
-      return;
-    }
-
-    const optimisticSensors = { ...sensors, [sensorId]: { ...sensor, name: formattedName, lastSeen: Date.now() } };
-    saveSensors(optimisticSensors);
-
-    try {
-      let renameOk = false;
-      for (const target of getSensorTargets(sensor)) {
-        const res = await fetch(`http://${target}/api/name`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: formattedName })
-        });
-        if (res.ok) {
-          renameOk = true;
-          break;
+  // --- IP subnet scan (only the device's own subnet) ---
+  const getLocalSubnet = useCallback(() => {
+    // Get the current IP of the device (WebRTC trick)
+    return new Promise<string>((resolve) => {
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      pc.createDataChannel('');
+      pc.createOffer().then((offer) => pc.setLocalDescription(offer));
+      pc.onicecandidate = (ice) => {
+        if (!ice || !ice.candidate || !ice.candidate.candidate) return;
+        const ipRegex = /([0-9]{1,3}\.){3}[0-9]{1,3}/;
+        const match = ice.candidate.candidate.match(ipRegex);
+        if (match) {
+          resolve(match[0]);
+          pc.close();
         }
-      }
-      if (!renameOk) throw new Error('rename failed');
-      const queue = { ...pendingRenames };
-      delete queue[sensorId];
-      savePendingRenames(queue);
-    } catch (e) {
-      savePendingRenames({ ...pendingRenames, [sensorId]: formattedName });
-    }
-  };
-
-  const flushPendingRename = async (sensorId: string) => {
-    const sensor = sensors[sensorId];
-    const pendingName = pendingRenames[sensorId];
-    if (!sensor || !pendingName) return;
-
-    try {
-      let renameOk = false;
-      for (const target of getSensorTargets(sensor)) {
-        const res = await fetch(`http://${target}/api/name`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: pendingName })
-        });
-        if (res.ok) {
-          renameOk = true;
-          break;
-        }
-      }
-      if (!renameOk) return;
-      const queue = { ...pendingRenames };
-      delete queue[sensorId];
-      savePendingRenames(queue);
-    } catch {
-      // keep queued
-    }
-  };
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const handleLocalFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []) as File[];
-    const urls = files.filter(f => f.type.startsWith('image/')).map(f => URL.createObjectURL(f));
-    if (urls.length > 0) {
-      setLocalFiles(urls);
-      setImageSource('local');
-      setArtIndex(0);
-      resetMenuTimer();
-    }
-  };
-  
-  // Load user-defined profiles from storage
-  const [profiles, setProfiles] = useState<Record<string, RoomProfile>>(() => {
-    try {
-      const saved = localStorage.getItem('canvas_profiles');
-      return saved ? JSON.parse(saved) : {};
-    } catch { return {}; }
-  });
-
-  const luxBucket = Math.floor(telemetry.lux / 20) * 20;
-  const tempBucket = Math.floor(telemetry.temp / 500) * 500;
-  const currentBucketKey = `${luxBucket}_${tempBucket}`;
-
-  const getInnateProfile = (lux: number, k: number): RoomProfile => {
-    let lum = 60;
-    let w = 200;
-
-    if (lux < 5) { lum = 25; w = 450; } 
-    else if (lux < 20) { lum = 40; w = 350; } 
-    else if (lux > 150) { lum = 90; w = 50; } 
-
-    if (k < 2500) w += 100;
-    if (k > 4000) w -= 100;
-
-    return { 
-      luminance: Math.min(100, Math.max(0, lum)), 
-      warmth: Math.min(500, Math.max(-500, w)) 
-    };
-  };
-
-  useEffect(() => {
-    if (isScanning) {
-      setDiscoveryState('searching');
-      const scanNetwork = async () => {
-        const sensorList = Object.values(sensors) as SensorInfo[];
-        const knownSubnets = sensorList
-          .map((sensor) => sensor.ip.split('.').slice(0, 3).join('.'))
-          .filter((subnet) => subnet.split('.').length === 3);
-        const knownTargets = new Set<string>();
-        sensorList.forEach((sensor) => {
-          getSensorTargets(sensor).forEach((target) => knownTargets.add(target));
-        });
-        const fallbackSubnets = ['192.168.1', '192.168.0', '192.168.86', '192.168.68', '192.168.50', '10.0.0', '192.168.254'];
-        const subnets = [...new Set([...knownSubnets, ...fallbackSubnets])];
-        const newSensors = { ...sensors };
-        let foundAny = false;
-
-        const testTarget = async (target: string) => {
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 1200);
-            const res = await fetch(`http://${target}/`, { signal: controller.signal, mode: 'cors' });
-            clearTimeout(timeoutId);
-            
-            if (res.ok) {
-              const data = await res.json();
-              if (data.id && data.lux !== undefined) {
-                const existingSensor = newSensors[data.id];
-                const ipMatch = target.match(/^(\d{1,3}\.){3}\d{1,3}$/) ? target : (existingSensor?.ip || '');
-                newSensors[data.id] = {
-                  name: data.name || 'Unknown Sensor',
-                  ip: ipMatch,
-                  hostname: data.hostname || existingSensor?.hostname,
-                  lastSeen: Date.now()
-                };
-                foundAny = true;
-              }
-            }
-          } catch (e) {
-            // Ignore timeout or network errors
-          }
-        };
-
-        await Promise.all(Array.from(knownTargets).map((target) => testTarget(target)));
-
-        const batchSize = 32;
-        for (const subnet of subnets) {
-          let i = 1;
-          while (i < 255) {
-            const batch = [];
-            for (let b = 0; b < batchSize && i < 255; b++, i++) {
-              batch.push(testTarget(`${subnet}.${i}`));
-            }
-            await Promise.all(batch);
-          }
-        }
-
-        if (foundAny) {
-          saveSensors(newSensors);
-          if (!selectedSensorId) {
-            const firstId = Object.keys(newSensors)[0];
-            setSelectedSensorId(firstId);
-            localStorage.setItem('selected_sensor_id_v2', firstId);
-          }
-          setDiscoveryState('connected');
-        } else {
-          setDiscoveryState('lost');
-        }
-        setIsScanning(false);
       };
+      setTimeout(() => resolve(''), 2000); // fallback if WebRTC fails
+    });
+  }, []);
 
-      scanNetwork();
-    }
-  }, [isScanning, sensors, selectedSensorId]);
-
-  useEffect(() => {
-    if (isScanning) return;
-    const shouldRetryDiscovery = !selectedSensorId || discoveryState === 'lost';
-    if (!shouldRetryDiscovery) return;
-    const retryTimer = setTimeout(() => setIsScanning(true), 30000);
-    return () => clearTimeout(retryTimer);
-  }, [isScanning, selectedSensorId, discoveryState]);
-
-  useEffect(() => {
-    if (!selectedSensorId || !sensors[selectedSensorId]) return;
-
-    const fetchTelemetry = async () => {
-      try {
-        const sensor = sensors[selectedSensorId];
-        const result = await fetchSensorJson(sensor);
-        if (result) {
-          const { data, target } = result;
-          setTelemetry(data);
-          if (data.id) {
-            const existing = sensors[data.id];
-            if (existing) {
-              const ipMatch = target.match(/^(\d{1,3}\.){3}\d{1,3}$/) ? target : existing.ip;
-              const updated = {
-                ...sensors,
-                [data.id]: {
-                  ...existing,
-                  ip: ipMatch,
-                  hostname: data.hostname || existing.hostname,
-                  name: data.name || existing.name,
-                  lastSeen: Date.now()
-                }
-              };
-              saveSensors(updated);
-            }
+  const scanSubnet = useCallback(async (subnetBase: string) => {
+    const promises: Promise<SensorInfo | null>[] = [];
+    for (let i = 1; i <= 254; i++) {
+      const ip = `${subnetBase}.${i}`;
+      promises.push(
+        (async () => {
+          try {
+            const resp = await fetch(`http://${ip}/`, { mode: 'cors', signal: AbortSignal.timeout(800) });
+            const json = await resp.json();
+            return {
+              id: json.id,
+              name: json.name,
+              hostname: json.hostname || '',
+              ip,
+              lastLux: json.lux || 0,
+              lastTemp: json.temp || 0,
+              lastMotion: json.motion || false,
+              online: true,
+            };
+          } catch {
+            return null;
           }
-          setDiscoveryState('connected');
-          flushPendingRename(selectedSensorId);
+        })()
+      );
+      // limit parallelism
+      if (i % MAX_SCAN_PARALLEL === 0) await new Promise(r => setTimeout(r, 100));
+    }
+    const results = await Promise.all(promises);
+    return results.filter((s): s is SensorInfo => s !== null);
+  }, []);
+
+  const discoverAll = useCallback(async () => {
+    if (scanningRef.current) return;
+    scanningRef.current = true;
+
+    let found: SensorInfo[] = [];
+    // 1. Try mDNS first
+    found = await discoverMdns();
+    if (found.length === 0) {
+      // 2. Fallback to IP scan on local subnet
+      const localIP = await getLocalSubnet();
+      if (localIP) {
+        const subnet = localIP.substring(0, localIP.lastIndexOf('.'));
+        found = await scanSubnet(subnet);
+      }
+    }
+
+    // 3. Merge with previously stored IPs (from localStorage)
+    const storedIPs = JSON.parse(localStorage.getItem('sensor_ips') || '[]') as string[];
+    const existingIPs = sensors.map(s => s.ip);
+    const newIPs = found.map(s => s.ip).filter(ip => !existingIPs.includes(ip));
+    const allIPs = [...new Set([...storedIPs, ...newIPs])];
+    localStorage.setItem('sensor_ips', JSON.stringify(allIPs));
+
+    setSensors(prev => {
+      const map = new Map(prev.map(s => [s.id, s]));
+      found.forEach(s => {
+        const existing = map.get(s.id);
+        if (existing) {
+          // update IP/hostname but keep last readings
+          existing.ip = s.ip || existing.ip;
+          existing.hostname = s.hostname || existing.hostname;
+          existing.name = s.name || existing.name;
+          existing.online = true;
         } else {
-          setDiscoveryState('lost');
+          map.set(s.id, s);
         }
-      } catch (e) {
-        setDiscoveryState('lost');
-      }
-    };
+      });
+      return Array.from(map.values());
+    });
+    scanningRef.current = false;
+  }, [discoverMdns, getLocalSubnet, scanSubnet, sensors]);
 
-    const interval = setInterval(fetchTelemetry, 4000);
+  // --- Polling online sensors for fresh data ---
+  const pollSensors = useCallback(async () => {
+    const updated = await Promise.all(
+      sensors.map(async (sensor) => {
+        let url = '';
+        if (sensor.hostname) {
+          url = `http://${sensor.hostname}.local/`;
+        } else if (sensor.ip) {
+          url = `http://${sensor.ip}/`;
+        } else {
+          return { ...sensor, online: false };
+        }
+        try {
+          const resp = await fetch(url, { mode: 'cors', signal: AbortSignal.timeout(1500) });
+          const json = await resp.json();
+          return {
+            ...sensor,
+            lastLux: json.lux || 0,
+            lastTemp: json.temp || 0,
+            lastMotion: json.motion || false,
+            online: true,
+          };
+        } catch {
+          return { ...sensor, online: false };
+        }
+      })
+    );
+    setSensors(updated);
+  }, [sensors]);
+
+  // Start discovery once on mount, then poll at interval
+  useEffect(() => {
+    discoverAll();
+    const interval = setInterval(pollSensors, SENSOR_POLL_INTERVAL);
     return () => clearInterval(interval);
-  }, [selectedSensorId, sensors]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  return { sensors, refresh: discoverAll };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Weather & Location Hook                                            */
+/* ------------------------------------------------------------------ */
+function useWeather() {
+  const [weatherEnabled, setWeatherEnabled] = useState(false);
+  const [city, setCity] = useState<string>('Unknown location');
+  const [temperature, setTemperature] = useState<number | null>(null);
+  const [condition, setCondition] = useState<string>('');
+  const [permissionDenied, setPermissionDenied] = useState(false);
+
+  // Load saved city from localStorage
   useEffect(() => {
-    if (isStatic) return;
-    
-    const rotation = setInterval(() => {
-      if (!showSettingsMenu) setArtIndex(prev => (prev + 1) % ARTWORK.length);
-    }, rotationInterval * 60000);
-    return () => clearInterval(rotation);
-  }, [showSettingsMenu, isStatic, rotationInterval]);
+    const saved = localStorage.getItem('weather_city');
+    if (saved) setCity(saved);
+  }, []);
 
-  useEffect(() => {
-    motionHistoryRef.current = [...motionHistoryRef.current.slice(-(motionSensitivity - 1)), telemetry.motion];
-    const hasSustainedMotion = motionHistoryRef.current.length >= motionSensitivity && 
-                                motionHistoryRef.current.every(m => m === true);
-
-    if (hasSustainedMotion) {
-      setIsScreenBlack(false);
-      if (motionTimerRef.current) clearTimeout(motionTimerRef.current);
-    } else {
-      const hasLostMotion = motionHistoryRef.current.every(m => m === false);
-      if (hasLostMotion && !isScreenBlack && !motionTimerRef.current) {
-        motionTimerRef.current = setTimeout(() => {
-          setIsScreenBlack(true);
-          motionTimerRef.current = null;
-        }, powerSafeMinutes * 60000); 
-      }
-    }
-  }, [telemetry.motion, isScreenBlack, motionSensitivity, powerSafeMinutes]);
-
-  useEffect(() => {
-    const userProfile = profiles[currentBucketKey];
-    if (userProfile) {
-      setLuminance(userProfile.luminance);
-      setWarmth(userProfile.warmth);
-    } else {
-      const innate = getInnateProfile(telemetry.lux, telemetry.temp);
-      setLuminance(innate.luminance);
-      setWarmth(innate.warmth);
-    }
-  }, [currentBucketKey, profiles, telemetry.lux, telemetry.temp]);
-
-  const saveProfile = (newLum: number, newWarmth: number) => {
-    const updated = {
-      ...profiles,
-      [currentBucketKey]: { luminance: newLum, warmth: newWarmth }
-    };
-    setProfiles(updated);
-    localStorage.setItem('canvas_profiles', JSON.stringify(updated));
-    resetMenuTimer();
-  };
-
-  const resetUiTimer = () => {
-    setUiVisible(true);
-    if (uiTimerRef.current) clearTimeout(uiTimerRef.current);
-    uiTimerRef.current = setTimeout(() => {
-      setUiVisible(false);
-    }, 5000);
-  };
-
-  const resetMenuTimer = () => {
-    if (showSettingsMenu) {
-      if (menuTimerRef.current) clearTimeout(menuTimerRef.current);
-      menuTimerRef.current = setTimeout(() => {
-        closeSettingsMenu();
-      }, 10000);
-    }
-  };
-
-  const closeSettingsMenu = (syncHistory = true) => {
-    setShowSettingsMenu(false);
-    if (syncHistory && window.history.state?.ambientSettings) {
-      ignoreNextPopStateRef.current = true;
-      window.history.back();
-    }
-  };
-
-  useEffect(() => {
-    const onPopState = () => {
-      if (ignoreNextPopStateRef.current) {
-        ignoreNextPopStateRef.current = false;
+  const requestLocationPermission = useCallback(async (): Promise<GeolocationPosition | null> => {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        resolve(null);
         return;
       }
-      if (showSettingsMenu) {
-        setShowSettingsMenu(false);
-      }
-    };
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
-  }, [showSettingsMenu]);
+      // Check permission state
+      navigator.permissions.query({ name: 'geolocation' }).then((perm) => {
+        if (perm.state === 'denied') {
+          setPermissionDenied(true);
+          resolve(null);
+          return;
+        }
+        // Trigger the permission prompt by requesting position
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            setPermissionDenied(false);
+            resolve(pos);
+          },
+          (err) => {
+            console.error('[Location] error:', err);
+            if (err.code === err.PERMISSION_DENIED) {
+              setPermissionDenied(true);
+            }
+            resolve(null);
+          },
+          { timeout: LOCATION_TIMEOUT, enableHighAccuracy: false }
+        );
+      });
+    });
+  }, []);
 
-  useEffect(() => {
-    const handleActivity = (e?: KeyboardEvent) => {
-      resetUiTimer();
-      if (showSettingsMenu) resetMenuTimer();
-      const targetElement = e?.target as HTMLElement | null;
-      const isTypingTarget = !!targetElement && (
-        targetElement.tagName === 'INPUT' ||
-        targetElement.tagName === 'TEXTAREA' ||
-        targetElement.isContentEditable
-      );
-      
-      if (e?.key === 'ArrowLeft') {
-        setArtIndex(prev => (prev - 1 + ARTWORK.length) % ARTWORK.length);
-      } else if (e?.key === 'ArrowRight') {
-        setArtIndex(prev => (prev + 1) % ARTWORK.length);
-      } else if (!isTypingTarget && (e?.key === 'Escape' || e?.key === 'Backspace') && showSettingsMenu) {
-        e.preventDefault();
-        closeSettingsMenu();
-      }
-    };
-
-    window.addEventListener('mousemove', handleActivity);
-    window.addEventListener('keydown', handleActivity as any);
-    window.addEventListener('mousedown', handleActivity);
-    window.addEventListener('touchstart', handleActivity);
-
-    resetUiTimer();
-
-    return () => {
-      window.removeEventListener('mousemove', handleActivity);
-      window.removeEventListener('keydown', handleActivity);
-      window.removeEventListener('mousedown', handleActivity);
-      window.removeEventListener('touchstart', handleActivity);
-    };
-  }, [showSettingsMenu]);
-
-  useEffect(() => {
-    if (showSettingsMenu) {
-      if (!window.history.state?.ambientSettings) {
-        window.history.pushState({ ambientSettings: true }, '');
-      }
-      resetMenuTimer();
-    } else {
-      if (menuTimerRef.current) clearTimeout(menuTimerRef.current);
+  const fetchWeather = useCallback(async () => {
+    if (!weatherEnabled) return;
+    const pos = await requestLocationPermission();
+    if (!pos) {
+      // Use cached city or "Unknown"
+      setTemperature(null);
+      setCondition('');
+      return;
     }
-  }, [showSettingsMenu]);
+    try {
+      // Reverse geocode
+      const { latitude, longitude } = pos.coords;
+      const geoResp = await fetch(
+        `${BIGDATACLOUD_REVERSE_URL}?latitude=${latitude}&longitude=${longitude}&localityLanguage=en`
+      );
+      const geoData = await geoResp.json();
+      const newCity = geoData.city || geoData.locality || 'Unknown location';
+      setCity(newCity);
+      localStorage.setItem('weather_city', newCity);
 
-  // Filter Computation & Media Source Resolution
-  let currentArt = ARTWORK[artIndex % ARTWORK.length];
-  
-  if (imageSource === 'local' && localFiles.length > 0) {
-    currentArt = {
-      id: 999,
-      title: "Local Media",
-      artist: `Folder Item ${artIndex % localFiles.length + 1}`,
-      url: localFiles[artIndex % localFiles.length]
+      // Weather (Open-Meteo, no API key needed)
+      const weatherResp = await fetch(
+        `${WEATHER_API_URL}?latitude=${latitude}&longitude=${longitude}&current_weather=true`
+      );
+      const weatherData = await weatherResp.json();
+      setTemperature(weatherData.current_weather?.temperature ?? null);
+      setCondition(weatherData.current_weather?.weathercode ?? '');
+    } catch (e) {
+      console.error('[Weather] fetch failed', e);
+      setTemperature(null);
+    }
+  }, [weatherEnabled, requestLocationPermission]);
+
+  // Toggle weather – request permission when enabling
+  const toggleWeather = useCallback(() => {
+    setWeatherEnabled((prev) => {
+      const next = !prev;
+      if (next) {
+        fetchWeather(); // will trigger permission prompt if needed
+      } else {
+        setTemperature(null);
+        setCondition('');
+      }
+      return next;
+    });
+  }, [fetchWeather]);
+
+  // Refresh weather every 15 minutes
+  useEffect(() => {
+    if (!weatherEnabled) return;
+    fetchWeather();
+    const interval = setInterval(fetchWeather, 15 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [weatherEnabled, fetchWeather]);
+
+  return { weatherEnabled, toggleWeather, city, temperature, condition, permissionDenied };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Google Photos Hook (simplified – auth handled by server)           */
+/* ------------------------------------------------------------------ */
+function usePhotos() {
+  const [photos, setPhotos] = useState<string[]>([]);
+  const [authUrl, setAuthUrl] = useState('');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  const fetchPhotos = useCallback(async () => {
+    try {
+      const resp = await fetch('/api/photos');
+      if (resp.status === 401) {
+        const data = await resp.json();
+        setAuthUrl(data.authUrl);
+        setIsAuthenticated(false);
+        return;
+      }
+      const data = await resp.json();
+      setPhotos(data.photos || []);
+      setIsAuthenticated(true);
+    } catch (e) {
+      console.error('[Photos] fetch error', e);
+    }
+  }, []);
+
+  const checkAuth = useCallback(async () => {
+    try {
+      const resp = await fetch('/api/check-auth');
+      if (resp.ok) {
+        setIsAuthenticated(true);
+        fetchPhotos();
+      } else {
+        const data = await resp.json();
+        setAuthUrl(data.authUrl);
+        setIsAuthenticated(false);
+      }
+    } catch { /* ignore */ }
+  }, [fetchPhotos]);
+
+  useEffect(() => {
+    checkAuth();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return { photos, authUrl, isAuthenticated };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Profiles & Ambient Modes Hook                                      */
+/* ------------------------------------------------------------------ */
+type Profile = 'clock' | 'weather' | 'sensor' | 'photos';
+
+function useProfiles() {
+  const [activeProfile, setActiveProfile] = useState<Profile>('clock');
+
+  // Save to localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('active_profile') as Profile;
+    if (saved) setActiveProfile(saved);
+  }, []);
+
+  const switchProfile = (p: Profile) => {
+    setActiveProfile(p);
+    localStorage.setItem('active_profile', p);
+  };
+
+  return { activeProfile, switchProfile };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main App Component                                                 */
+/* ------------------------------------------------------------------ */
+export default function App() {
+  const { sensors, refresh: refreshSensors } = useSensors();
+  const { weatherEnabled, toggleWeather, city, temperature, condition, permissionDenied } = useWeather();
+  const { photos, authUrl, isAuthenticated } = usePhotos();
+  const { activeProfile, switchProfile } = useProfiles();
+
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Auto-refresh is handled inside hooks
+
+  // Keyboard / remote navigation
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.key === 'Backspace') {
+        setSidebarOpen(false);
+      }
     };
-  }
-
-  const overlayOpacity = luminance / 100;
-  const warmColor = `rgba(255, ${200 + (warmth/500)*55}, ${150 - (warmth/500)*100}, 0.25)`;
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, []);
 
   return (
-    <div className="w-full h-screen bg-black overflow-hidden flex flex-col font-sans text-[#EAE6DA] relative select-none">
-      <AnimatePresence>
-        <motion.div
-          key={currentArt.id}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 2.5, ease: "easeInOut" }}
-          className="absolute inset-0 z-0"
-        >
-          <div 
-            className="absolute inset-0 bg-center bg-cover transition-[filter] duration-1000"
-            style={{ 
-              backgroundImage: `url(${currentArt.url})`,
-              filter: `brightness(${0.02 + overlayOpacity * 0.98}) contrast(1.1) sepia(0.2)` 
-            }}
-          >
-            <div 
-              className="absolute inset-0 mix-blend-multiply transition-colors duration-1000"
-              style={{ backgroundColor: warmColor, opacity: Math.abs(warmth) / 500 }}
-            />
-            <div 
-              className="absolute inset-0 mix-blend-overlay opacity-30 pointer-events-none"
-              style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/natural-paper.png')" }}
-            />
-            <div 
-              className="absolute inset-0 mix-blend-soft-light pointer-events-none transition-opacity duration-500"
-              style={{ 
-                backgroundImage: "url('https://www.transparenttextures.com/patterns/stardust.png')",
-                opacity: grainIntensity / 100 * 0.8
-              }}
-            />
-          </div>
-        </motion.div>
-      </AnimatePresence>
-      <div className={`absolute inset-0 z-40 bg-black transition-opacity duration-[3000ms] pointer-events-none ${isScreenBlack ? 'opacity-100' : 'opacity-0'}`} />
-      <div className="absolute inset-0 z-10 pointer-events-none shadow-[inset_0_0_300px_rgba(0,0,0,0.8)]" />
-      <div 
-        className={`absolute top-0 left-0 w-full p-[3vw] flex justify-between items-start z-30 transition-all duration-1000 pointer-events-none ${isScreenBlack ? 'opacity-0' : ''}`}
-        style={{ opacity: isScreenBlack ? 0 : 0.15 + overlayOpacity * 0.85 }}
-      >
-        <div className={`transition-opacity duration-700 ${showClock ? 'opacity-100' : 'opacity-0'}`}>
-          <div className="text-[5vw] font-serif tracking-tighter text-[#EAE6DA] drop-shadow-2xl leading-none">{time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-          <div className="text-[0.8vw] font-mono opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold">{time.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
-        </div>
-        <div className={`transition-opacity duration-700 text-right ${showWeather ? 'opacity-100' : 'opacity-0'}`}>
-          <div className="flex flex-col items-end gap-[0.6vw]">
-            <div className="text-[3.4vw] font-serif tracking-tighter text-[#EAE6DA] drop-shadow-2xl leading-none">
-              {weatherTemp !== null ? `${weatherTemp}°C` : '--°C'}
-            </div>
-            <div className="scale-[1.1] origin-right h-[3vw] flex items-center justify-end">{getWeatherIcon(weatherCode)}</div>
-          </div>
-          <div className="text-[0.8vw] font-mono opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold max-w-[18vw] truncate">{weatherLocation}</div>
-        </div>
-      </div>
-      <div 
-        className={`absolute inset-0 z-50 p-[3vw] flex flex-col justify-center items-center transition-all duration-700 ${
-          showSettingsMenu ? 'opacity-100' : 'opacity-0 pointer-events-none'
-        }`}
-      >
-        <div className="w-[65vw] max-w-5xl bg-[#1A1D14]/40 backdrop-blur-md border border-white/10 p-[3vw] rounded-[2vw] shadow-[0_20px_50px_rgba(0,0,0,0.5)] flex flex-col gap-[2vw]">
-                     {/* Display & Layout Section */}
-          <div className="space-y-[1vw]">
-            <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Display</h3>
-            <div className="grid grid-cols-4 gap-[2vw]">
-              <TvSlider 
-                label="Brightness" value={luminance} min={0} max={100} step={5} suffix="%"
-                onChange={(v: number) => { setLuminance(v); resetMenuTimer(); }}
-                onSave={(v: number) => saveProfile(v, warmth)}
-                gradientClasses="bg-gradient-to-r from-black/50 to-white/50"
-                thumbColor="#D4CDA4"
-              />
-              <TvSlider 
-                label="Temp" value={warmth} min={-500} max={500} step={50} suffix="K"
-                onChange={(v: number) => { setWarmth(v); resetMenuTimer(); }}
-                onSave={(v: number) => saveProfile(luminance, v)}
-                gradientClasses="bg-gradient-to-r from-blue-400/20 via-white/10 to-orange-400/20"
-                thumbColor="#FFB380"
-                thumbLeftCalc={`calc(${50 + (warmth / 500) * 50}% - 0.6vw)`}
-              />
-              <TvSlider 
-                label="Grain" value={grainIntensity} min={0} max={100} step={5} suffix="%"
-                onChange={(v: number) => { setGrainIntensity(v); resetMenuTimer(); }}
-                gradientClasses="bg-gradient-to-r from-transparent to-white/30"
-                thumbColor="#A3B18A"
-              />
-              <div className="flex gap-[1vw]">
-                <button 
-                  onClick={() => { setShowClock(!showClock); resetMenuTimer(); }} 
-                  className={`flex-1 aspect-square rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${showClock ? 'bg-[#D4CDA4]/10 border-[#D4CDA4] text-[#D4CDA4]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
-                >
-                  <Clock className="w-[1.2vw] h-[1.2vw]" />
-                  <span className="text-[0.7vw] uppercase tracking-widest font-bold mt-[0.2vw]">Clock</span>
-                </button>
-                <button 
-                  onClick={async () => {
-                    if (showWeather) {
-                      setShowWeather(false);
-                      resetMenuTimer();
-                      return;
-                    }
-                    const allowed = await requestWeatherPermission();
-                    if (!allowed) {
-                      setShowWeather(false);
-                      setWeatherTemp(null);
-                      setWeatherLocation('Location permission required');
-                      alert('Weather cannot be enabled without location permission.');
-                    } else {
-                      setWeatherLocation(WEATHER_LOCATING_LABEL);
-                      setShowWeather(true);
-                      fetchWeather();
-                    }
-                    resetMenuTimer();
-                  }} 
-                  className={`flex-1 aspect-square rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${showWeather ? 'bg-[#D4CDA4]/10 border-[#D4CDA4] text-[#D4CDA4]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
-                >
-                  <Cloud className="w-[1.2vw] h-[1.2vw]" />
-                  <span className="text-[0.7vw] uppercase tracking-widest font-bold mt-[0.2vw]">Weather</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Media Sources Section */}
-          <div className="space-y-[1vw]">
-            <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Media & Rotation</h3>
-            <div className="grid grid-cols-3 gap-[2vw]">
-                <button onClick={() => setImageSource('curated')} className={`p-[1.5vw] rounded-[1vw] border flex items-center gap-[1vw] ${imageSource === 'curated' ? 'bg-[#D4CDA4]/10 border-[#D4CDA4]' : 'border-white/10 hover:bg-white/5'}`}>
-                    <ImageIcon className={`w-[1.5vw] h-[1.5vw] ${imageSource === 'curated' ? 'text-[#D4CDA4]' : 'text-white/40'}`} />
-                    <span className="text-[0.9vw] uppercase font-bold text-white/60 tracking-widest">Curated</span>
-                </button>
-                <button onClick={() => {setImageSource('local'); fileInputRef.current?.click()}} className={`p-[1.5vw] rounded-[1vw] border flex items-center gap-[1vw] ${imageSource === 'local' ? 'bg-[#D4CDA4]/10 border-[#D4CDA4]' : 'border-white/10 hover:bg-white/5'}`}>
-                    <FolderOpen className={`w-[1.5vw] h-[1.5vw] ${imageSource === 'local' ? 'text-[#D4CDA4]' : 'text-white/40'}`} />
-                     <span className="text-[0.9vw] uppercase font-bold text-white/60 tracking-widest">Local Albums</span>
-                     <input type="file" ref={fileInputRef} onChange={handleLocalFileSelect} accept="image/*" multiple webkitdirectory="true" className="hidden" />
-                </button>
-                <div className="flex flex-col justify-between">
-                  <div className="flex justify-between items-center text-[0.8vw] uppercase tracking-[0.3em] text-white/50 font-bold mb-[0.5vw]">
-                    <span>Cycle Time</span>
-                    <span className="text-[#A3B18A] font-mono text-[0.9vw]">{rotationInterval}M</span>
-                  </div>
-                  <div className="flex gap-[0.5vw] h-full">
-                    {[5, 10, 30, 60].map(time => (
-                      <button 
-                        key={time} 
-                        onClick={() => { setRotationInterval(time); resetMenuTimer(); }} 
-                        className={`flex-1 rounded-[0.5vw] text-[0.8vw] font-mono border transition-all ${rotationInterval === time ? 'bg-[#D4CDA4] text-[#1A1D14] border-[#D4CDA4]' : 'border-white/10 text-white/60 hover:bg-white/5'}`}
-                      >
-                        {time}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-            </div>
-          </div>
-
-          {/* Power & Sensors Section */}
-          <div className="space-y-[1vw]">
-            <div className="flex justify-between items-center border-b border-white/10 pb-[0.5vw]">
-              <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-none pb-0">Sensors & Telemetry</h3>
-              <button onClick={() => { setIsScanning(true); resetMenuTimer(); }} className="text-[0.6vw] flex items-center gap-[0.5vw] uppercase tracking-widest text-[#D4CDA4] hover:text-white transition-colors">
-                {isScanning ? <Loader2 className="w-[1vw] h-[1vw] animate-spin" /> : <Search className="w-[1vw] h-[1vw]" />}
-                {isScanning ? 'Scanning...' : 'Rescan'}
-              </button>
-            </div>
-            <div className="grid grid-cols-2 gap-[2vw]">
-              <div className="bg-white/5 p-[1.5vw] rounded-[1vw]">
-                {Object.keys(sensors).length === 0 ? (
-                  <div className="flex flex-col items-center justify-center text-white/60 text-[0.8vw] uppercase text-center h-full gap-[0.5vw]">
-                    <p className="font-bold text-[#D4CDA4]">No Sensors Found</p>
-                    <p className="text-[0.7vw] text-white/40 leading-relaxed max-w-[80%] mt-[0.5vw]">Please connect your phone to "Ambient Setup" to set up your ambient sensor.</p>
-
-                    <div className="mt-[1vw] flex gap-[0.5vw] items-center w-full max-w-[70%]">
-                      <input 
-                        type="text" 
-                        placeholder="Manual IP (e.g. 192.168.1.50)" 
-                        className="bg-black/30 border border-white/10 rounded-[0.5vw] px-[0.8vw] py-[0.5vw] text-[0.7vw] font-mono text-white/80 w-full focus:outline-none focus:border-[#D4CDA4]/50"
-                        onKeyDown={async (e) => {
-                          if (e.key === 'Enter') {
-                            const val = e.currentTarget.value.trim();
-                            if (val) {
-                              try {
-                                const res = await fetch(`http://${val}/`);
-                                const data = await res.json();
-                                if (data.id) {
-                                  const newSensors = { ...sensors, [data.id]: { name: data.name || 'Manual Sensor', ip: val, lastSeen: Date.now() } };
-                                  saveSensors(newSensors);
-                                  setSelectedSensorId(data.id);
-                                  localStorage.setItem('selected_sensor_id_v2', data.id);
-                                }
-                              } catch(err) {
-                                alert("Could not connect to sensor at " + val);
-                              }
-                            }
-                          }
-                        }}
-                      />
-                    </div>
-                  </div>
-                ) : (Object.entries(sensors) as Array<[string, SensorInfo]>).map(([mac, sensor]) => (
-                    <div key={mac} className={`p-[0.8vw] rounded-[0.5vw] mb-[0.5vw] border space-y-[0.7vw] ${selectedSensorId === mac ? 'bg-[#D4CDA4]/10 border-[#D4CDA4]' : 'border-white/5 hover:bg-white/10'}`}>
-                      <div className="flex justify-between items-center gap-[0.8vw]">
-                        <div className="flex flex-col">
-                          <span className="text-[0.9vw] text-white font-mono">{sensor.name}</span>
-                          <span className="text-[0.62vw] text-white/40 font-mono">{sensor.ip}</span>
-                        </div>
-                        <button onClick={() => { setSelectedSensorId(mac); localStorage.setItem('selected_sensor_id_v2', mac); resetMenuTimer(); }} className={`text-[0.7vw] uppercase font-bold px-[1vw] py-[0.5vw] rounded-[0.2vw] transition-all ${selectedSensorId === mac ? 'bg-[#D4CDA4] text-[#1A1D14]' : 'bg-white/10 text-white/50 hover:bg-white/20'}`}>
-                          {selectedSensorId === mac ? 'Active' : 'Select'}
-                        </button>
-                      </div>
-                      <div className="flex items-center gap-[0.6vw]">
-                        <input
-                          type="text"
-                          maxLength={24}
-                          placeholder="Rename sensor"
-                          defaultValue={sensor.name.replace(' - ambient tv sensor', '')}
-                          className="bg-black/30 border border-white/10 rounded-[0.4vw] px-[0.8vw] py-[0.45vw] text-[0.62vw] font-mono text-white/80 w-full focus:outline-none focus:border-[#D4CDA4]/50"
-                          onKeyDown={async (e) => {
-                            if (e.key === 'Enter') {
-                              await updateSensorName(mac, e.currentTarget.value);
-                            }
-                          }}
-                        />
-                        <button
-                          onClick={async (e) => {
-                            const input = e.currentTarget.parentElement?.querySelector('input');
-                            if (input) {
-                              await updateSensorName(mac, input.value);
-                            }
-                          }}
-                          className="text-[0.62vw] uppercase font-bold px-[0.9vw] py-[0.45vw] rounded-[0.3vw] bg-white/10 text-white/60 hover:bg-white/20 transition-colors"
-                        >
-                          Save
-                        </button>
-                      </div>
-                      {pendingRenames[mac] && (
-                        <div className="text-[0.55vw] text-[#A3B18A] uppercase tracking-widest">
-                          Rename queued (will sync when sensor is online)
-                        </div>
-                      )}
-                    </div>
-                ))}
-              </div>
-              <div className="bg-white/5 p-[1.5vw] rounded-[1vw] flex flex-col justify-center gap-[1.5vw]">
-                <div className="flex justify-between items-end border-b border-white/10 pb-[1vw]">
-                    <span className="text-[0.8vw] text-white/50 font-bold uppercase tracking-widest">Luminance</span>
-                    <span className="text-[2vw] text-[#D4CDA4] font-mono leading-none">{telemetry.lux} <span className="text-[1vw] text-[#A3B18A]">LUX</span></span>
-                </div>
-                <div className="flex justify-between items-end">
-                    <span className="text-[0.8vw] text-white/50 font-bold uppercase tracking-widest">Temperature</span>
-                    <span className="text-[2vw] text-[#D4CDA4] font-mono leading-none">{telemetry.temp} <span className="text-[1vw] text-[#A3B18A]">K</span></span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-        </div>
-      </div>
-      <div className={`absolute bottom-[4vw] left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-[1.5vw] transition-all duration-1000 ${showSettingsMenu || !uiVisible ? 'opacity-0 scale-95 pointer-events-none' : 'opacity-100'}`}>
-        <button 
-          onClick={() => setShowSettingsMenu(true)}
-          className="bg-[#1A1D14]/40 backdrop-blur-md border border-white/10 px-[3vw] py-[1.2vw] rounded-full text-[0.8vw] uppercase tracking-[0.4em] text-[#D4CDA4]/70 hover:text-[#D4CDA4] hover:bg-[#1A1D14]/60 hover:scale-105 transition-all flex items-center gap-[1vw] shadow-[0_20px_50px_rgba(0,0,0,0.5)] pointer-events-auto"
-        >
-          <Settings className="w-[1.2vw] h-[1.2vw] opacity-50" />
-          Adjust Settings
-        </button>
-        {isScreenBlack && (
-          <div className="bg-red-900/60 backdrop-blur-xl border border-red-500/20 px-[2.5vw] py-[0.8vw] rounded-full text-[0.7vw] uppercase tracking-[0.3em] text-red-200 animate-pulse font-bold shadow-2xl">
-            Screen in Power Save Mode
-          </div>
+    <div style={{ width: '100vw', height: '100vh', position: 'relative', overflow: 'hidden', fontFamily: 'sans-serif' }}>
+      {/* Ambient background */}
+      <AnimatePresence mode="wait">
+        {activeProfile === 'clock' && (
+          <motion.div key="clock" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <ClockDisplay />
+          </motion.div>
         )}
+        {activeProfile === 'weather' && (
+          <motion.div key="weather" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+            <WeatherDisplay city={city} temperature={temperature} condition={condition} enabled={weatherEnabled} />
+          </motion.div>
+        )}
+        {activeProfile === 'sensor' && (
+          <motion.div key="sensor" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            style={{ position: 'absolute', inset: 0 }}>
+            <SensorDashboard sensors={sensors} onRefresh={refreshSensors} />
+          </motion.div>
+        )}
+        {activeProfile === 'photos' && (
+          <motion.div key="photos" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            style={{ position: 'absolute', inset: 0 }}>
+            <PhotosSlideshow photos={photos} authUrl={authUrl} isAuthenticated={isAuthenticated} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Settings sidebar */}
+      <AnimatePresence>
+        {sidebarOpen && (
+          <motion.aside
+            initial={{ x: '100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: '100%' }}
+            style={{
+              position: 'absolute', top: 0, right: 0, width: 320, height: '100%',
+              background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(10px)',
+              padding: 30, display: 'flex', flexDirection: 'column', gap: 20,
+              zIndex: 100
+            }}>
+            <button onClick={() => setSidebarOpen(false)} style={{ alignSelf: 'flex-end', background: 'none', border: 'none', color: 'white', fontSize: 24 }}>✕</button>
+            <h2 style={{ color: '#D4CDA4', textTransform: 'uppercase', letterSpacing: '0.2em', margin: 0 }}>Settings</h2>
+            <button onClick={() => switchProfile('clock')} style={buttonStyle(activeProfile === 'clock')}>🕒 Clock</button>
+            <button onClick={() => switchProfile('weather')} style={buttonStyle(activeProfile === 'weather')}>🌤️ Weather</button>
+            <button onClick={() => switchProfile('sensor')} style={buttonStyle(activeProfile === 'sensor')}>📊 Sensors</button>
+            <button onClick={() => switchProfile('photos')} style={buttonStyle(activeProfile === 'photos')}>📷 Photos</button>
+            {activeProfile === 'weather' && (
+              <div style={{ color: '#EAE6DA', fontSize: 14 }}>
+                <label>
+                  <input type="checkbox" checked={weatherEnabled} onChange={toggleWeather} />
+                  {' '}Enable weather
+                </label>
+                {permissionDenied && <div style={{ color: '#e06c75', marginTop: 8 }}>Location permission denied. Weather won't update.</div>}
+              </div>
+            )}
+            {activeProfile === 'sensor' && (
+              <button onClick={refreshSensors} style={{ ...buttonStyle(false), marginTop: 10 }}>🔄 Rediscover sensors</button>
+            )}
+          </motion.aside>
+        )}
+      </AnimatePresence>
+
+      {/* Floating settings button (TV remote friendly) */}
+      <button
+        onClick={() => setSidebarOpen(true)}
+        style={{
+          position: 'absolute', bottom: 20, right: 20, zIndex: 50,
+          background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.3)',
+          color: 'white', padding: '10px 15px', borderRadius: 8, cursor: 'pointer', fontSize: 18
+        }}>⚙️</button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Sub-components (pure presentational)                               */
+/* ------------------------------------------------------------------ */
+
+function ClockDisplay() {
+  const [time, setTime] = useState(new Date());
+  useEffect(() => {
+    const t = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div style={{ color: 'white', textAlign: 'center' }}>
+      <div style={{ fontSize: 120, fontWeight: 200, letterSpacing: '0.1em' }}>
+        {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      </div>
+      <div style={{ fontSize: 30, opacity: 0.7 }}>
+        {time.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}
       </div>
     </div>
   );
+}
+
+function WeatherDisplay({ city, temperature, condition, enabled }: { city: string, temperature: number | null, condition: string, enabled: boolean }) {
+  if (!enabled) return <div style={{ color: '#aaa' }}>Weather is disabled</div>;
+  return (
+    <div style={{ color: 'white', textAlign: 'center' }}>
+      <div style={{ fontSize: 24, opacity: 0.7, marginBottom: 10 }}>{city}</div>
+      {temperature !== null ? (
+        <>
+          <div style={{ fontSize: 80, fontWeight: 200 }}>{temperature}°C</div>
+          <div style={{ fontSize: 20 }}>{condition}</div>
+        </>
+      ) : (
+        <div style={{ fontSize: 30 }}>Loading weather...</div>
+      )}
+    </div>
+  );
+}
+
+function SensorDashboard({ sensors, onRefresh }: { sensors: SensorInfo[], onRefresh: () => void }) {
+  if (sensors.length === 0) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'white' }}>
+        <p>No sensors found.</p>
+        <button onClick={onRefresh} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', padding: 10, borderRadius: 8 }}>Scan again</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 30, padding: 40 }}>
+      {sensors.map(s => (
+        <div key={s.id} style={{
+          background: 'rgba(0,0,0,0.6)', padding: 20, borderRadius: 16,
+          width: 250, color: 'white', textAlign: 'center', border: s.online ? '1px solid #A3B18A' : '1px solid #555'
+        }}>
+          <h3 style={{ margin: 0, fontSize: 20 }}>{s.name}</h3>
+          <div style={{ fontSize: 14, opacity: 0.6 }}>{s.online ? 'Online' : 'Offline'}</div>
+          <div style={{ marginTop: 10, fontSize: 36 }}>{s.lastLux}<span style={{ fontSize: 16, opacity: 0.5 }}> lux</span></div>
+          <div>{s.lastTemp} K</div>
+          <div>Motion: {s.lastMotion ? 'Detected' : 'None'}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PhotosSlideshow({ photos, authUrl, isAuthenticated }: { photos: string[], authUrl: string, isAuthenticated: boolean }) {
+  if (!isAuthenticated) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'white' }}>
+        <p>Connect Google Photos to see your memories</p>
+        {authUrl && (
+          <a href={authUrl} style={{
+            background: '#4285F4', color: 'white', padding: '10px 20px', borderRadius: 8, textDecoration: 'none', marginTop: 10
+          }}>Sign in with Google</a>
+        )}
+      </div>
+    );
+  }
+  if (photos.length === 0) {
+    return <div style={{ color: '#aaa', textAlign: 'center', paddingTop: '40vh' }}>No photos loaded</div>;
+  }
+  // Simple slideshow – just display the first photo for now
+  return (
+    <div style={{ width: '100%', height: '100%', background: 'black' }}>
+      <img src={photos[0]} style={{ width: '100%', height: '100%', objectFit: 'contain' }} alt="Memory" />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helper styles                                                      */
+/* ------------------------------------------------------------------ */
+function buttonStyle(active: boolean): React.CSSProperties {
+  return {
+    background: active ? 'rgba(212, 205, 164, 0.2)' : 'transparent',
+    border: active ? '1px solid #D4CDA4' : '1px solid rgba(255,255,255,0.2)',
+    color: active ? '#D4CDA4' : '#fff',
+    padding: '12px 16px',
+    borderRadius: 8,
+    textAlign: 'left',
+    cursor: 'pointer',
+    fontSize: 16,
+    transition: 'all 0.2s',
+    width: '100%',
+    textTransform: 'uppercase',
+    letterSpacing: '0.1em',
+  };
 }
