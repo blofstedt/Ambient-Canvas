@@ -21,6 +21,7 @@ interface SensorInfo {
   ip: string;
   hostname?: string;
   lastSeen: number;
+  pairedTvId?: string;
 }
 
 type PendingRenameQueue = Record<string, string>;
@@ -111,6 +112,14 @@ export default function App() {
   });
   const [selectedSensorId, setSelectedSensorId] = useState<string>(() => localStorage.getItem('selected_sensor_id_v2') || '');
   const [telemetry, setTelemetry] = useState({ lux: 15, temp: 2800, motion: true });
+  const [tvId] = useState<string>(() => {
+    const key = 'ambient_tv_id_v1';
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    const generated = (globalThis.crypto?.randomUUID?.() || `tv-${Date.now()}`);
+    localStorage.setItem(key, generated);
+    return generated;
+  });
   const [isScanning, setIsScanning] = useState(true);
   const [discoveryState, setDiscoveryState] = useState<'searching' | 'connected' | 'lost'>('searching');
   
@@ -280,6 +289,18 @@ export default function App() {
     return null;
   };
 
+  const pairSensor = async (sensor: SensorInfo) => {
+    for (const target of getSensorTargets(sensor)) {
+      const res = await fetch(`http://${target}/api/pair`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tvId })
+      });
+      if (res.ok) return true;
+    }
+    return false;
+  };
+
   const normalizeSensorName = (name: string) => {
     const cleaned = name.trim().replace(/\s+/g, ' ').slice(0, 24);
     if (!cleaned) return '';
@@ -418,11 +439,13 @@ export default function App() {
               if (data.id && data.lux !== undefined) {
                 const existingSensor = newSensors[data.id];
                 const ipMatch = target.match(/^(\d{1,3}\.){3}\d{1,3}$/) ? target : (existingSensor?.ip || '');
+                if (data.pairedTvId && data.pairedTvId !== tvId) return;
                 newSensors[data.id] = {
                   name: data.name || 'Unknown Sensor',
                   ip: ipMatch,
                   hostname: data.hostname || existingSensor?.hostname,
-                  lastSeen: Date.now()
+                  lastSeen: Date.now(),
+                  pairedTvId: data.pairedTvId || existingSensor?.pairedTvId
                 };
                 foundAny = true;
               }
@@ -481,6 +504,10 @@ export default function App() {
         const result = await fetchSensorJson(sensor);
         if (result) {
           const { data, target } = result;
+          if (data.pairedTvId && data.pairedTvId !== tvId) {
+            setDiscoveryState('lost');
+            return;
+          }
           setTelemetry(data);
           if (data.id) {
             const existing = sensors[data.id];
@@ -493,7 +520,8 @@ export default function App() {
                   ip: ipMatch,
                   hostname: data.hostname || existing.hostname,
                   name: data.name || existing.name,
-                  lastSeen: Date.now()
+                  lastSeen: Date.now(),
+                  pairedTvId: data.pairedTvId || existingSensor?.pairedTvId
                 }
               };
               saveSensors(updated);
@@ -850,7 +878,17 @@ export default function App() {
                                 const res = await fetch(`http://${val}/`);
                                 const data = await res.json();
                                 if (data.id) {
-                                  const newSensors = { ...sensors, [data.id]: { name: data.name || 'Manual Sensor', ip: val, lastSeen: Date.now() } };
+                                  if (data.pairedTvId && data.pairedTvId !== tvId) {
+                                    alert("Sensor is already paired with another TV.");
+                                    return;
+                                  }
+                                  const candidate = { name: data.name || 'Manual Sensor', ip: val, lastSeen: Date.now(), pairedTvId: data.pairedTvId };
+                                  const paired = await pairSensor(candidate as SensorInfo);
+                                  if (!paired) {
+                                    alert("Could not pair this sensor to this TV.");
+                                    return;
+                                  }
+                                  const newSensors = { ...sensors, [data.id]: { ...candidate, pairedTvId: tvId } };
                                   saveSensors(newSensors);
                                   setSelectedSensorId(data.id);
                                   localStorage.setItem('selected_sensor_id_v2', data.id);

@@ -21,6 +21,7 @@ unsigned long lastSerialPrint = 0;
 String macAddress = "";
 String hostName = "";
 String roomName = "New Sensor";
+String pairedTvId = "";
 
 String buildBroadcastName(const String &baseName) {
   String trimmed = baseName;
@@ -51,9 +52,21 @@ void handleRoot() {
   json += "\"lux\":" + String(currentLux) + ",";
   json += "\"temp\":" + String(currentTemp) + ",";
   json += "\"motion\":" + String(isMotion ? "true" : "false") + ",";
-  json += "\"hostname\":\"" + hostName + "\"";
+  json += "\"hostname\":\"" + hostName + "\",";
+  json += "\"paired\":" + String(pairedTvId.length() > 0 ? "true" : "false") + ",";
+  json += "\"pairedTvId\":\"" + pairedTvId + "\"";
   json += "}";
   server.send(200, "application/json", json);
+}
+
+
+String getJsonValue(const String &body, const String &key) {
+  int keyIndex = body.indexOf("\"" + key + "\"");
+  if (keyIndex < 0) return "";
+  int firstQuote = body.indexOf('"', body.indexOf(':', keyIndex) + 1);
+  int secondQuote = body.indexOf('"', firstQuote + 1);
+  if (firstQuote < 0 || secondQuote < 0 || secondQuote <= firstQuote) return "";
+  return body.substring(firstQuote + 1, secondQuote);
 }
 
 void handleRename() {
@@ -65,18 +78,11 @@ void handleRename() {
   }
 
   String body = server.arg("plain");
-  int keyIndex = body.indexOf("\"name\"");
-  if (keyIndex < 0) {
+  String requestedName = getJsonValue(body, "name");
+  if (requestedName.length() == 0) {
     server.send(400, "application/json", "{\"ok\":false,\"error\":\"missing name field\"}");
     return;
   }
-  int firstQuote = body.indexOf('"', body.indexOf(':', keyIndex) + 1);
-  int secondQuote = body.indexOf('"', firstQuote + 1);
-  if (firstQuote < 0 || secondQuote < 0 || secondQuote <= firstQuote) {
-    server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid json\"}");
-    return;
-  }
-  String requestedName = body.substring(firstQuote + 1, secondQuote);
   roomName = buildBroadcastName(requestedName);
   preferences.putString("room", roomName);
   String payload = "{\"ok\":true,\"name\":\"" + roomName + "\"}";
@@ -84,6 +90,31 @@ void handleRename() {
 
   Serial.print("[RENAME] Updated sensor name: ");
   Serial.println(roomName);
+}
+
+
+void handlePair() {
+  sendCors();
+  if (!server.hasArg("plain")) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"missing body\"}");
+    return;
+  }
+
+  String body = server.arg("plain");
+  String tvId = getJsonValue(body, "tvId");
+  if (tvId.length() == 0) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"missing tvId\"}");
+    return;
+  }
+
+  if (pairedTvId.length() > 0 && pairedTvId != tvId) {
+    server.send(409, "application/json", "{\"ok\":false,\"error\":\"already paired\"}");
+    return;
+  }
+
+  pairedTvId = tvId;
+  preferences.putString("pairedTvId", pairedTvId);
+  server.send(200, "application/json", "{\"ok\":true,\"paired\":true}");
 }
 
 void setupNetwork() {
@@ -168,13 +199,17 @@ void setup() {
   preferences.begin("ambient-app", false);
   roomName = buildBroadcastName(preferences.getString("room", "New Sensor"));
 
+  pairedTvId = preferences.getString("pairedTvId", "");
+
   setupNetwork();
   setupMdns();
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/name", HTTP_POST, handleRename);
+  server.on("/api/pair", HTTP_POST, handlePair);
   server.on("/", HTTP_OPTIONS, handleOptions);
   server.on("/api/name", HTTP_OPTIONS, handleOptions);
+  server.on("/api/pair", HTTP_OPTIONS, handleOptions);
   server.begin();
 }
 
