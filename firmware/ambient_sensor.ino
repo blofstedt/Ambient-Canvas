@@ -180,7 +180,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
-  MDNS.update();
+  // ESP32 mDNS responder does not require a loop-time update call.
 
   if (millis() - lastReadTime > 500) {
     uint16_t r, g, b, c;
