@@ -291,12 +291,22 @@ export default function App() {
 
   const pairSensor = async (sensor: SensorInfo) => {
     for (const target of getSensorTargets(sensor)) {
-      const res = await fetch(`http://${target}/api/pair`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tvId })
-      });
-      if (res.ok) return true;
+      try {
+        const res = await fetch(`http://${target}/api/pair`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tvId })
+        });
+        if (res.ok) return true;
+
+        // If firmware doesn't support pairing endpoint, continue gracefully.
+        if (res.status === 404 || res.status === 405) {
+          const probe = await fetch(`http://${target}/`);
+          if (probe.ok) return true;
+        }
+      } catch {
+        // try next target
+      }
     }
     return false;
   };
@@ -422,7 +432,7 @@ export default function App() {
         sensorList.forEach((sensor) => {
           getSensorTargets(sensor).forEach((target) => knownTargets.add(target));
         });
-        const fallbackSubnets = ['192.168.1', '192.168.0', '192.168.86', '192.168.68', '192.168.50', '10.0.0', '192.168.254'];
+        const fallbackSubnets = ['192.168.1', '192.168.0', '192.168.4', '192.168.86', '192.168.68', '192.168.50', '10.0.0', '192.168.254'];
         const subnets = [...new Set([...knownSubnets, ...fallbackSubnets])];
         const newSensors = { ...sensors };
         let foundAny = false;
@@ -521,7 +531,7 @@ export default function App() {
                   hostname: data.hostname || existing.hostname,
                   name: data.name || existing.name,
                   lastSeen: Date.now(),
-                  pairedTvId: data.pairedTvId || existingSensor?.pairedTvId
+                  pairedTvId: data.pairedTvId || existing?.pairedTvId
                 }
               };
               saveSensors(updated);
@@ -623,7 +633,7 @@ export default function App() {
         return;
       }
       if (showSettingsMenu) {
-        setShowSettingsMenu(false);
+        closeSettingsMenu(false);
       }
     };
     window.addEventListener('popstate', onPopState);
@@ -798,7 +808,7 @@ export default function App() {
                     if (!allowed) {
                       setShowWeather(false);
                       setWeatherTemp(null);
-                      setWeatherLocation('Location permission required');
+                      setWeatherLocation('Location permission required (enable to retry)');
                       alert('Weather cannot be enabled without location permission.');
                     } else {
                       setWeatherLocation(WEATHER_LOCATING_LABEL);
@@ -963,7 +973,7 @@ export default function App() {
       </div>
       <div className={`absolute bottom-[4vw] left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-[1.5vw] transition-all duration-1000 ${showSettingsMenu || !uiVisible ? 'opacity-0 scale-95 pointer-events-none' : 'opacity-100'}`}>
         <button 
-          onClick={() => setShowSettingsMenu(true)}
+          onClick={() => { setShowSettingsMenu(true); resetMenuTimer(); }}
           className="bg-[#1A1D14]/40 backdrop-blur-md border border-white/10 px-[3vw] py-[1.2vw] rounded-full text-[0.8vw] uppercase tracking-[0.4em] text-[#D4CDA4]/70 hover:text-[#D4CDA4] hover:bg-[#1A1D14]/60 hover:scale-105 transition-all flex items-center gap-[1vw] shadow-[0_20px_50px_rgba(0,0,0,0.5)] pointer-events-auto"
         >
           <Settings className="w-[1.2vw] h-[1.2vw] opacity-50" />
