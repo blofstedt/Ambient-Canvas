@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Allow cleartext for local network IPs -->
+        <domain includeSubdomains="true">local</domain>
+        <!-- If you know the IP subnet, you can add it here, or just enable for the app below -->
+    </domain-config>
+    <!-- Broad fallback to allow HTTP for local IoT devices -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
