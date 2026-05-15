@@ -59,7 +59,6 @@ void handleRoot() {
   server.send(200, "application/json", json);
 }
 
-
 String getJsonValue(const String &body, const String &key) {
   int keyIndex = body.indexOf("\"" + key + "\"");
   if (keyIndex < 0) return "";
@@ -91,7 +90,6 @@ void handleRename() {
   Serial.print("[RENAME] Updated sensor name: ");
   Serial.println(roomName);
 }
-
 
 void handlePair() {
   sendCors();
@@ -153,19 +151,26 @@ void setupNetwork() {
   roomName = buildBroadcastName(String(custom_room_name.getValue()));
   preferences.putString("room", roomName);
 
-  String apSsid = roomName;
-  if (apSsid.length() > 31) apSsid = apSsid.substring(0, 31);
-  WiFi.softAP(apSsid.c_str());
+  // If NOT paired, broadcast the SoftAP so it can be set up
+  if (pairedTvId.length() == 0) {
+    String apSsid = roomName;
+    if (apSsid.length() > 31) apSsid = apSsid.substring(0, 31);
+    WiFi.softAP(apSsid.c_str());
+    Serial.print("WiFi AP SSID: ");
+    Serial.println(apSsid);
+    Serial.print("WiFi AP IP: ");
+    Serial.println(WiFi.softAPIP());
+  } else {
+    // If paired, shut down the SoftAP to hide it from phones
+    WiFi.mode(WIFI_STA);
+    Serial.println("Device is paired. SoftAP disabled (STA mode only).");
+  }
 
   Serial.println("\n--- CONNECTED! ---");
   Serial.print("Room Name Saved As: ");
   Serial.println(roomName);
   Serial.print("WiFi STA IP: ");
   Serial.println(WiFi.localIP());
-  Serial.print("WiFi AP SSID: ");
-  Serial.println(apSsid);
-  Serial.print("WiFi AP IP: ");
-  Serial.println(WiFi.softAPIP());
 }
 
 void setupMdns() {
@@ -178,6 +183,11 @@ void setupMdns() {
     MDNS.addService("http", "tcp", 80);
     MDNS.addServiceTxt("http", "tcp", "id", macAddress.c_str());
     MDNS.addServiceTxt("http", "tcp", "name", roomName.c_str());
+    
+    // Broadcast the pairing state directly in the mDNS TXT records
+    MDNS.addServiceTxt("http", "tcp", "paired", pairedTvId.length() > 0 ? "true" : "false");
+    MDNS.addServiceTxt("http", "tcp", "tvId", pairedTvId.c_str());
+
     Serial.print("mDNS: http://");
     Serial.print(hostName);
     Serial.println(".local");
@@ -215,7 +225,6 @@ void setup() {
 
 void loop() {
   server.handleClient();
-  // ESP32 mDNS responder does not require a loop-time update call.
 
   if (millis() - lastReadTime > 500) {
     uint16_t r, g, b, c;
