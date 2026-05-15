@@ -11,6 +11,7 @@ Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_50MS, TCS3472
 Preferences preferences;
 
 const int motionPin = 27;
+const int sensorLedPin = 14; // Connect a wire from the sensor's 'LED' pin to ESP32 pin 14
 
 uint16_t currentLux = 0;
 uint16_t currentTemp = 0;
@@ -151,7 +152,6 @@ void setupNetwork() {
   roomName = buildBroadcastName(String(custom_room_name.getValue()));
   preferences.putString("room", roomName);
 
-  // If NOT paired, broadcast the SoftAP so it can be set up
   if (pairedTvId.length() == 0) {
     String apSsid = roomName;
     if (apSsid.length() > 31) apSsid = apSsid.substring(0, 31);
@@ -161,7 +161,6 @@ void setupNetwork() {
     Serial.print("WiFi AP IP: ");
     Serial.println(WiFi.softAPIP());
   } else {
-    // If paired, shut down the SoftAP to hide it from phones
     WiFi.mode(WIFI_STA);
     Serial.println("Device is paired. SoftAP disabled (STA mode only).");
   }
@@ -184,7 +183,6 @@ void setupMdns() {
     MDNS.addServiceTxt("http", "tcp", "id", macAddress.c_str());
     MDNS.addServiceTxt("http", "tcp", "name", roomName.c_str());
     
-    // Broadcast the pairing state directly in the mDNS TXT records
     MDNS.addServiceTxt("http", "tcp", "paired", pairedTvId.length() > 0 ? "true" : "false");
     MDNS.addServiceTxt("http", "tcp", "tvId", pairedTvId.c_str());
 
@@ -199,6 +197,10 @@ void setupMdns() {
 void setup() {
   Serial.begin(115200);
   pinMode(motionPin, INPUT_PULLDOWN);
+
+  // Set up the sensor LED pin and dim it right away
+  pinMode(sensorLedPin, OUTPUT);
+  analogWrite(sensorLedPin, 12); // Value out of 255 (12 is ~5% brightness). Adjust if you want it dimmer or brighter.
 
   if (tcs.begin()) {
     Serial.println("Found TCS34725 Color Sensor");
