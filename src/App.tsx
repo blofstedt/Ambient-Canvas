@@ -26,14 +26,31 @@ interface SensorInfo {
 
 type PendingRenameQueue = Record<string, string>;
 
-const TvSlider = ({ label, value, min, max, step, suffix, onChange, onSave, gradientClasses, thumbColor, thumbLeftCalc }: any) => {
+type PairSensorResult = 'paired' | 'already_paired_elsewhere' | 'reachable_but_unpaired_endpoint' | 'unreachable';
+
+const SettingTooltip = ({ text }: { text: string }) => (
+  <div className="relative inline-flex items-center group">
+    <span
+      tabIndex={0}
+      className="inline-flex items-center justify-center w-[1vw] h-[1vw] rounded-full border border-white/20 text-white/50 text-[0.58vw] font-bold cursor-help focus:outline-none focus:ring-[0.15vw] focus:ring-[#D4CDA4]/60"
+      aria-label="Setting help"
+    >
+      ?
+    </span>
+    <div className="pointer-events-none absolute z-50 left-1/2 -translate-x-1/2 top-[1.4vw] w-[18vw] bg-black/90 border border-white/20 rounded-[0.5vw] px-[0.6vw] py-[0.45vw] text-[0.6vw] uppercase tracking-[0.12em] text-white/80 leading-relaxed opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+      {text}
+    </div>
+  </div>
+);
+
+const TvSlider = ({ label, tooltip, value, min, max, step, suffix, onChange, onSave, gradientClasses, thumbColor, thumbLeftCalc }: any) => {
   const [isEditing, setIsEditing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   return (
     <div className="space-y-[0.5vw]">
       <div className="flex justify-between items-center text-[0.8vw] uppercase tracking-[0.3em] text-white/50 font-bold">
-        <span>{label} {isEditing && <span className="text-white animate-pulse ml-2">(EDIT)</span>}</span>
+        <span className="flex items-center gap-[0.35vw]">{label} {tooltip ? <SettingTooltip text={tooltip} /> : null} {isEditing && <span className="text-white animate-pulse ml-2">(EDIT)</span>}</span>
         <span className="text-[#A3B18A] font-mono text-[0.9vw]">{value}{suffix}</span>
       </div>
       <div 
@@ -315,7 +332,7 @@ export default function App() {
     return null;
   };
 
-  const pairSensor = async (sensor: SensorInfo) => {
+  const pairSensor = async (sensor: SensorInfo): Promise<PairSensorResult> => {
     for (const target of getSensorTargets(sensor)) {
       try {
         const res = await fetch(`http://${target}/api/pair`, {
@@ -323,18 +340,19 @@ export default function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ tvId })
         });
-        if (res.ok) return true;
+        if (res.ok) return 'paired';
+        if (res.status === 409) return 'already_paired_elsewhere';
 
         // If firmware doesn't support pairing endpoint, continue gracefully.
         if (res.status === 404 || res.status === 405) {
           const probe = await fetch(`http://${target}/`);
-          if (probe.ok) return true;
+          if (probe.ok) return 'reachable_but_unpaired_endpoint';
         }
       } catch {
         // try next target
       }
     }
-    return false;
+    return 'unreachable';
   };
 
   const normalizeSensorName = (name: string) => {
@@ -467,12 +485,12 @@ export default function App() {
           try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 1200);
-            const res = await fetch(`http://${target}/`, { signal: controller.signal, mode: 'cors' });
+            const res = await fetch(`http://${target}/`, { signal: controller.signal });
             clearTimeout(timeoutId);
             
             if (res.ok) {
               const data = await res.json();
-              if (data.id && data.lux !== undefined) {
+              if (data.id) {
                 const existingSensor = newSensors[data.id];
                 const ipMatch = target.match(/^(\d{1,3}\.){3}\d{1,3}$/) ? target : (existingSensor?.ip || '');
                 newSensors[data.id] = {
@@ -544,7 +562,9 @@ export default function App() {
         const result = await fetchSensorJson(sensor, 800);
         if (result) {
           const { data, target } = result;
-          setTelemetry(data);
+          if (typeof data.lux === 'number' && typeof data.temp === 'number' && typeof data.motion === 'boolean') {
+            setTelemetry(data);
+          }
           if (data.id) {
             const existing = sensors[data.id];
             if (existing) {
@@ -824,17 +844,17 @@ export default function App() {
         <div className="w-[65vw] max-w-5xl bg-[#1A1D14]/40 backdrop-blur-md border border-white/10 p-[3vw] rounded-[2vw] shadow-[0_20px_50px_rgba(0,0,0,0.5)] flex flex-col gap-[2vw]">
                      {/* Display & Layout Section */}
           <div className="space-y-[1vw]">
-            <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Display</h3>
+            <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Display <SettingTooltip text="Picture tuning and overlay controls for the artwork screen." /></h3>
             <div className="grid grid-cols-4 gap-[2vw]">
               <TvSlider 
-                label="Brightness" value={luminance} min={0} max={100} step={5} suffix="%"
+                label="Brightness" tooltip="Controls artwork brightness after ambient adjustments are applied." value={luminance} min={0} max={100} step={5} suffix="%"
                 onChange={(v: number) => { setLuminance(v); resetMenuTimer(); }}
                 onSave={(v: number) => saveProfile(v, warmth)}
                 gradientClasses="bg-gradient-to-r from-black/50 to-white/50"
                 thumbColor="#D4CDA4"
               />
               <TvSlider 
-                label="Temp" value={warmth} min={-500} max={500} step={50} suffix="K"
+                label="Temp" tooltip="Warms or cools the image tone to match room lighting." value={warmth} min={-500} max={500} step={50} suffix="K"
                 onChange={(v: number) => { setWarmth(v); resetMenuTimer(); }}
                 onSave={(v: number) => saveProfile(luminance, v)}
                 gradientClasses="bg-gradient-to-r from-blue-400/20 via-white/10 to-orange-400/20"
@@ -842,7 +862,7 @@ export default function App() {
                 thumbLeftCalc={`calc(${50 + (warmth / 500) * 50}% - 0.6vw)`}
               />
               <TvSlider 
-                label="Grain" value={grainIntensity} min={0} max={100} step={5} suffix="%"
+                label="Grain" tooltip="Adds paper-like texture over the artwork." value={grainIntensity} min={0} max={100} step={5} suffix="%"
                 onChange={(v: number) => { setGrainIntensity(v); resetMenuTimer(); }}
                 gradientClasses="bg-gradient-to-r from-transparent to-white/30"
                 thumbColor="#A3B18A"
@@ -850,7 +870,7 @@ export default function App() {
               <div className="flex gap-[1vw]">
                 <button 
                   onClick={() => { setShowClock(!showClock); resetMenuTimer(); }} 
-                  className={`flex-1 aspect-square rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${showClock ? 'bg-[#D4CDA4]/10 border-[#D4CDA4] text-[#D4CDA4]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
+                  title="Toggle clock overlay on the artwork screen." className={`flex-1 aspect-square rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${showClock ? 'bg-[#D4CDA4]/10 border-[#D4CDA4] text-[#D4CDA4]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
                 >
                   <Clock className="w-[1.2vw] h-[1.2vw]" />
                   <span className="text-[0.7vw] uppercase tracking-widest font-bold mt-[0.2vw]">Clock</span>
@@ -875,7 +895,7 @@ export default function App() {
                     }
                     resetMenuTimer();
                   }} 
-                  className={`flex-1 aspect-square rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${showWeather ? 'bg-[#D4CDA4]/10 border-[#D4CDA4] text-[#D4CDA4]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
+                  title="Toggle weather overlay (requires location permission)." className={`flex-1 aspect-square rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${showWeather ? 'bg-[#D4CDA4]/10 border-[#D4CDA4] text-[#D4CDA4]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
                 >
                   <Cloud className="w-[1.2vw] h-[1.2vw]" />
                   <span className="text-[0.7vw] uppercase tracking-widest font-bold mt-[0.2vw]">Weather</span>
@@ -886,7 +906,7 @@ export default function App() {
 
           {/* Media Sources Section */}
           <div className="space-y-[1vw]">
-            <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Media & Rotation</h3>
+            <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Media & Rotation <SettingTooltip text="Choose where images come from and how quickly they rotate." /></h3>
             <div className="grid grid-cols-3 gap-[2vw]">
                 <button onClick={() => setImageSource('curated')} className={`p-[1.5vw] rounded-[1vw] border flex items-center gap-[1vw] ${imageSource === 'curated' ? 'bg-[#D4CDA4]/10 border-[#D4CDA4]' : 'border-white/10 hover:bg-white/5'}`}>
                     <ImageIcon className={`w-[1.5vw] h-[1.5vw] ${imageSource === 'curated' ? 'text-[#D4CDA4]' : 'text-white/40'}`} />
@@ -899,7 +919,7 @@ export default function App() {
                 </button>
                 <div className="flex flex-col justify-between">
                   <div className="flex justify-between items-center text-[0.8vw] uppercase tracking-[0.3em] text-white/50 font-bold mb-[0.5vw]">
-                    <span>Cycle Time</span>
+                    <span className="flex items-center gap-[0.4vw]">Cycle Time <SettingTooltip text="How often artwork automatically changes to the next image." /></span>
                     <span className="text-[#A3B18A] font-mono text-[0.9vw]">{rotationInterval}M</span>
                   </div>
                   <div className="flex gap-[0.5vw] h-full">
@@ -919,16 +939,16 @@ export default function App() {
 
           {/* Power & Sleep Section */}
           <div className="space-y-[1vw]">
-            <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Power & Sleep</h3>
+            <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Power & Sleep <SettingTooltip text="Motion, blackout, and panel protection behavior." /></h3>
             <div className="grid grid-cols-5 gap-[2vw]">
               <TvSlider 
-                label="Sleep Timer" value={powerSafeMinutes} min={1} max={60} step={1} suffix="M"
+                label="Sleep Timer" tooltip="Minutes without motion before power-safe black screen mode activates." value={powerSafeMinutes} min={1} max={60} step={1} suffix="M"
                 onChange={(v: number) => { setPowerSafeMinutes(v); resetMenuTimer(); }}
                 gradientClasses="bg-gradient-to-r from-[#A3B18A]/10 to-[#A3B18A]/50"
                 thumbColor="#A3B18A"
               />
               <TvSlider 
-                label="Black Threshold" value={blackModeThreshold} min={0} max={50} step={1} suffix=" LUX"
+                label="Black Threshold" tooltip="When ambient light drops below this lux value, screen stays black if Black Mode is enabled." value={blackModeThreshold} min={0} max={50} step={1} suffix=" LUX"
                 onChange={(v: number) => { setBlackModeThreshold(v); resetMenuTimer(); }}
                 gradientClasses="bg-gradient-to-r from-black to-[#A3B18A]/30"
                 thumbColor="#000000"
@@ -946,7 +966,7 @@ export default function App() {
                 </p>
               </div>
               <div className="flex flex-col justify-center">
-                 <div className="text-[0.7vw] text-white/40 uppercase font-bold tracking-widest mb-[0.4vw]">Sensitivity</div>
+                 <div className="text-[0.7vw] text-white/40 uppercase font-bold tracking-widest mb-[0.4vw] flex items-center gap-[0.4vw]">Sensitivity <SettingTooltip text="Higher values require more consecutive motion readings before waking the display." /></div>
                  <div className="flex gap-[0.4vw]">
                     {[1, 3, 5, 10].map(s => (
                       <button 
@@ -960,7 +980,7 @@ export default function App() {
                  </div>
               </div>
               <div className="flex flex-col justify-center">
-                 <div className="text-[0.7vw] text-white/40 uppercase font-bold tracking-widest mb-[0.4vw]">OLED Saver</div>
+                 <div className="text-[0.7vw] text-white/40 uppercase font-bold tracking-widest mb-[0.4vw] flex items-center gap-[0.4vw]">OLED Saver <SettingTooltip text="Dimming timer used to reduce burn-in risk when nothing changes on screen." /></div>
                  <div className="flex gap-[0.4vw]">
                     {[5, 10, 30, 60].map((minutes) => (
                       <button
@@ -979,7 +999,7 @@ export default function App() {
           {/* Power & Sensors Section */}
           <div className="space-y-[1vw]">
             <div className="flex justify-between items-center border-b border-white/10 pb-[0.5vw]">
-              <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-none pb-0">Sensors & Telemetry</h3>
+              <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-none pb-0">Sensors & Telemetry <SettingTooltip text="Find ambient sensors, pick the active one, and view live readings." /></h3>
               <button onClick={() => { setIsScanning(true); resetMenuTimer(); }} className="text-[0.6vw] flex items-center gap-[0.5vw] uppercase tracking-widest text-[#D4CDA4] hover:text-white transition-colors">
                 {isScanning ? <Loader2 className="w-[1vw] h-[1vw] animate-spin" /> : <Search className="w-[1vw] h-[1vw]" />}
                 {isScanning ? 'Scanning...' : 'Rescan'}
@@ -1010,8 +1030,12 @@ export default function App() {
                                     return;
                                   }
                                   const candidate = { name: data.name || 'Manual Sensor', ip: val, lastSeen: Date.now(), pairedTvId: data.pairedTvId };
-                                  const paired = await pairSensor(candidate as SensorInfo);
-                                  if (!paired) {
+                                  const pairStatus = await pairSensor(candidate as SensorInfo);
+                                  if (pairStatus === 'already_paired_elsewhere') {
+                                    alert('Sensor is already paired with another TV.');
+                                    return;
+                                  }
+                                  if (pairStatus === 'unreachable') {
                                     alert("Could not pair this sensor to this TV.");
                                     return;
                                   }
@@ -1040,8 +1064,8 @@ export default function App() {
                           if (sensor.pairedTvId && sensor.pairedTvId !== tvId) {
                             const confirmSwitch = window.confirm('This sensor is currently paired to another TV. Switch it to this TV?');
                             if (!confirmSwitch) return;
-                            const paired = await pairSensor(sensor);
-                            if (!paired) {
+                            const pairStatus = await pairSensor(sensor);
+                            if (pairStatus !== 'paired' && pairStatus !== 'reachable_but_unpaired_endpoint') {
                               alert('Could not switch this sensor to the current TV.');
                               return;
                             }
