@@ -135,7 +135,24 @@ export default function App() {
   const [powerSafeAction, setPowerSafeAction] = useState<'black' | 'off'>('black');
   const [powerSafeMinutes, setPowerSafeMinutes] = useState(2);
   const [motionSensitivity, setMotionSensitivity] = useState(3); // Consecutive samples needed
+  const [blackModeEnabled, setBlackModeEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('ambient_black_mode_v1');
+    return saved === 'true';
+  });
+  const [blackModeThreshold, setBlackModeThreshold] = useState<number>(() => {
+    const saved = localStorage.getItem('ambient_black_mode_threshold_v1');
+    return saved ? parseInt(saved) : 5;
+  });
   const motionHistoryRef = useRef<boolean[]>([]);
+
+  // Persistence
+  useEffect(() => {
+    localStorage.setItem('ambient_black_mode_v1', String(blackModeEnabled));
+  }, [blackModeEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('ambient_black_mode_threshold_v1', String(blackModeThreshold));
+  }, [blackModeThreshold]);
 
   // UI Overlays & Sources
   const [showClock, setShowClock] = useState(true);
@@ -505,17 +522,23 @@ export default function App() {
     return () => clearTimeout(retryTimer);
   }, [isScanning, selectedSensorId, discoveryState]);
 
+  const isFetchingRef = useRef(false);
+
   useEffect(() => {
     if (!selectedSensorId || !sensors[selectedSensorId]) return;
 
     const fetchTelemetry = async () => {
+      if (isFetchingRef.current) return;
+      isFetchingRef.current = true;
+      
       try {
         const sensor = sensors[selectedSensorId];
-        const result = await fetchSensorJson(sensor);
+        const result = await fetchSensorJson(sensor, 800);
         if (result) {
           const { data, target } = result;
           if (data.pairedTvId && data.pairedTvId !== tvId) {
             setDiscoveryState('lost');
+            isFetchingRef.current = false;
             return;
           }
           setTelemetry(data);
@@ -544,10 +567,12 @@ export default function App() {
         }
       } catch (e) {
         setDiscoveryState('lost');
+      } finally {
+        isFetchingRef.current = false;
       }
     };
 
-    const interval = setInterval(fetchTelemetry, 4000);
+    const interval = setInterval(fetchTelemetry, 250);
     return () => clearInterval(interval);
   }, [selectedSensorId, sensors]);
 
@@ -565,6 +590,18 @@ export default function App() {
     const hasSustainedMotion = motionHistoryRef.current.length >= motionSensitivity && 
                                 motionHistoryRef.current.every(m => m === true);
 
+    // Black Mode Logic: If lux is below threshold and Black Mode is enabled, stay black regardless of motion.
+    const isBelowLuxThreshold = blackModeEnabled && telemetry.lux <= blackModeThreshold;
+
+    if (isBelowLuxThreshold) {
+      setIsScreenBlack(true);
+      if (motionTimerRef.current) {
+        clearTimeout(motionTimerRef.current);
+        motionTimerRef.current = null;
+      }
+      return;
+    }
+
     if (hasSustainedMotion) {
       setIsScreenBlack(false);
       if (motionTimerRef.current) clearTimeout(motionTimerRef.current);
@@ -577,7 +614,7 @@ export default function App() {
         }, powerSafeMinutes * 60000); 
       }
     }
-  }, [telemetry.motion, isScreenBlack, motionSensitivity, powerSafeMinutes]);
+  }, [telemetry.motion, telemetry.lux, isScreenBlack, motionSensitivity, powerSafeMinutes, blackModeEnabled, blackModeThreshold]);
 
   useEffect(() => {
     const userProfile = profiles[currentBucketKey];
@@ -856,6 +893,51 @@ export default function App() {
                     ))}
                   </div>
                 </div>
+            </div>
+          </div>
+
+          {/* Power & Sleep Section */}
+          <div className="space-y-[1vw]">
+            <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Power & Sleep</h3>
+            <div className="grid grid-cols-4 gap-[2vw]">
+              <TvSlider 
+                label="Sleep Timer" value={powerSafeMinutes} min={1} max={60} step={1} suffix="M"
+                onChange={(v: number) => { setPowerSafeMinutes(v); resetMenuTimer(); }}
+                gradientClasses="bg-gradient-to-r from-[#A3B18A]/10 to-[#A3B18A]/50"
+                thumbColor="#A3B18A"
+              />
+              <TvSlider 
+                label="Black Threshold" value={blackModeThreshold} min={0} max={50} step={1} suffix=" LUX"
+                onChange={(v: number) => { setBlackModeThreshold(v); resetMenuTimer(); }}
+                gradientClasses="bg-gradient-to-r from-black to-[#A3B18A]/30"
+                thumbColor="#000000"
+              />
+              <div className="flex flex-col gap-[0.5vw]">
+                <button 
+                  onClick={() => { setBlackModeEnabled(!blackModeEnabled); resetMenuTimer(); }} 
+                  className={`flex-1 h-full rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${blackModeEnabled ? 'bg-black border-[#A3B18A] text-[#A3B18A]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
+                >
+                  <EyeOff className="w-[1.2vw] h-[1.2vw]" />
+                  <span className="text-[0.7vw] uppercase tracking-widest font-bold mt-[0.2vw]">Black Mode</span>
+                </button>
+                <p className="text-[0.5vw] text-white/30 uppercase text-center leading-tight">
+                  For Full Array LED, OLED, and Mini LED TVs only
+                </p>
+              </div>
+              <div className="flex flex-col justify-center">
+                 <div className="text-[0.7vw] text-white/40 uppercase font-bold tracking-widest mb-[0.4vw]">Sensitivity</div>
+                 <div className="flex gap-[0.4vw]">
+                    {[1, 3, 5, 10].map(s => (
+                      <button 
+                        key={s} 
+                        onClick={() => { setMotionSensitivity(s); resetMenuTimer(); }}
+                        className={`flex-1 py-[0.4vw] rounded-[0.4vw] text-[0.7vw] font-mono border transition-all ${motionSensitivity === s ? 'bg-[#A3B18A] text-[#1A1D14] border-[#A3B18A]' : 'border-white/10 text-white/60 hover:bg-white/5'}`}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                 </div>
+              </div>
             </div>
           </div>
 
