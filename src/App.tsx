@@ -135,6 +135,11 @@ export default function App() {
   const [powerSafeAction, setPowerSafeAction] = useState<'black' | 'off'>('black');
   const [powerSafeMinutes, setPowerSafeMinutes] = useState(2);
   const [motionSensitivity, setMotionSensitivity] = useState(3); // Consecutive samples needed
+  const [oledSaverMinutes, setOledSaverMinutes] = useState<number>(() => {
+    const saved = localStorage.getItem('ambient_oled_saver_minutes_v1');
+    return saved ? parseInt(saved, 10) : 10;
+  });
+  const [isOledDimmed, setIsOledDimmed] = useState(false);
   const [blackModeEnabled, setBlackModeEnabled] = useState<boolean>(() => {
     const saved = localStorage.getItem('ambient_black_mode_v1');
     return saved === 'true';
@@ -153,6 +158,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('ambient_black_mode_threshold_v1', String(blackModeThreshold));
   }, [blackModeThreshold]);
+
+  useEffect(() => {
+    localStorage.setItem('ambient_oled_saver_minutes_v1', String(oledSaverMinutes));
+  }, [oledSaverMinutes]);
 
   // UI Overlays & Sources
   const [showClock, setShowClock] = useState(true);
@@ -466,7 +475,6 @@ export default function App() {
               if (data.id && data.lux !== undefined) {
                 const existingSensor = newSensors[data.id];
                 const ipMatch = target.match(/^(\d{1,3}\.){3}\d{1,3}$/) ? target : (existingSensor?.ip || '');
-                if (data.pairedTvId && data.pairedTvId !== tvId) return;
                 newSensors[data.id] = {
                   name: data.name || 'Unknown Sensor',
                   ip: ipMatch,
@@ -536,11 +544,6 @@ export default function App() {
         const result = await fetchSensorJson(sensor, 800);
         if (result) {
           const { data, target } = result;
-          if (data.pairedTvId && data.pairedTvId !== tvId) {
-            setDiscoveryState('lost');
-            isFetchingRef.current = false;
-            return;
-          }
           setTelemetry(data);
           if (data.id) {
             const existing = sensors[data.id];
@@ -688,13 +691,17 @@ export default function App() {
         targetElement.isContentEditable
       );
       
-      if (e?.key === 'ArrowLeft') {
+      if (!isTypingTarget && (e?.key === 'Escape' || e?.key === 'Backspace' || e?.key === 'BrowserBack')) {
+        if (showSettingsMenu) {
+          e.preventDefault();
+          closeSettingsMenu();
+          return;
+        }
+      }
+      if (!showSettingsMenu && e?.key === 'ArrowLeft') {
         setArtIndex(prev => (prev - 1 + ARTWORK.length) % ARTWORK.length);
-      } else if (e?.key === 'ArrowRight') {
+      } else if (!showSettingsMenu && e?.key === 'ArrowRight') {
         setArtIndex(prev => (prev + 1) % ARTWORK.length);
-      } else if (!isTypingTarget && (e?.key === 'Escape' || e?.key === 'Backspace') && showSettingsMenu) {
-        e.preventDefault();
-        closeSettingsMenu();
       }
     };
 
@@ -723,6 +730,20 @@ export default function App() {
       if (menuTimerRef.current) clearTimeout(menuTimerRef.current);
     }
   }, [showSettingsMenu]);
+
+
+  useEffect(() => {
+    if (showSettingsMenu) {
+      setIsOledDimmed(false);
+      return;
+    }
+    if (telemetry.motion) {
+      setIsOledDimmed(false);
+      return;
+    }
+    const dimTimer = setTimeout(() => setIsOledDimmed(true), oledSaverMinutes * 60000);
+    return () => clearTimeout(dimTimer);
+  }, [telemetry.motion, oledSaverMinutes, showSettingsMenu]);
 
   // Filter Computation & Media Source Resolution
   let currentArt = ARTWORK[artIndex % ARTWORK.length];
@@ -781,11 +802,11 @@ export default function App() {
         className={`absolute top-0 left-0 w-full p-[3vw] flex justify-between items-start z-30 transition-all duration-1000 pointer-events-none ${isScreenBlack ? 'opacity-0' : ''}`}
         style={{ opacity: isScreenBlack ? 0 : 0.15 + overlayOpacity * 0.85 }}
       >
-        <div className={`transition-opacity duration-700 ${showClock ? 'opacity-100' : 'opacity-0'}`}>
+        <div className={`transition-opacity duration-[3000ms] ${showClock ? 'opacity-100' : 'opacity-0'} ${isOledDimmed ? 'opacity-15' : ''}`}>
           <div className="text-[5vw] font-serif tracking-tighter text-[#EAE6DA] drop-shadow-2xl leading-none">{time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
           <div className="text-[0.8vw] font-mono opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold">{time.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
         </div>
-        <div className={`transition-opacity duration-700 text-right ${showWeather ? 'opacity-100' : 'opacity-0'}`}>
+        <div className={`transition-opacity duration-[3000ms] text-right ${showWeather ? 'opacity-100' : 'opacity-0'} ${isOledDimmed ? 'opacity-15' : ''}`}>
           <div className="flex flex-col items-end gap-[0.6vw]">
             <div className="text-[3.4vw] font-serif tracking-tighter text-[#EAE6DA] drop-shadow-2xl leading-none">
               {weatherTemp !== null ? `${weatherTemp}°C` : '--°C'}
@@ -899,7 +920,7 @@ export default function App() {
           {/* Power & Sleep Section */}
           <div className="space-y-[1vw]">
             <h3 className="text-[#D4CDA4] text-[0.8vw] uppercase tracking-[0.3em] font-bold border-b border-white/10 pb-[0.5vw]">Power & Sleep</h3>
-            <div className="grid grid-cols-4 gap-[2vw]">
+            <div className="grid grid-cols-5 gap-[2vw]">
               <TvSlider 
                 label="Sleep Timer" value={powerSafeMinutes} min={1} max={60} step={1} suffix="M"
                 onChange={(v: number) => { setPowerSafeMinutes(v); resetMenuTimer(); }}
@@ -934,6 +955,20 @@ export default function App() {
                         className={`flex-1 py-[0.4vw] rounded-[0.4vw] text-[0.7vw] font-mono border transition-all ${motionSensitivity === s ? 'bg-[#A3B18A] text-[#1A1D14] border-[#A3B18A]' : 'border-white/10 text-white/60 hover:bg-white/5'}`}
                       >
                         {s}
+                      </button>
+                    ))}
+                 </div>
+              </div>
+              <div className="flex flex-col justify-center">
+                 <div className="text-[0.7vw] text-white/40 uppercase font-bold tracking-widest mb-[0.4vw]">OLED Saver</div>
+                 <div className="flex gap-[0.4vw]">
+                    {[5, 10, 30, 60].map((minutes) => (
+                      <button
+                        key={minutes}
+                        onClick={() => { setOledSaverMinutes(minutes); resetMenuTimer(); }}
+                        className={`flex-1 py-[0.4vw] rounded-[0.4vw] text-[0.7vw] font-mono border transition-all ${oledSaverMinutes === minutes ? 'bg-[#A3B18A] text-[#1A1D14] border-[#A3B18A]' : 'border-white/10 text-white/60 hover:bg-white/5'}`}
+                      >
+                        {minutes}
                       </button>
                     ))}
                  </div>
@@ -1001,7 +1036,22 @@ export default function App() {
                           <span className="text-[0.9vw] text-white font-mono">{sensor.name}</span>
                           <span className="text-[0.62vw] text-white/40 font-mono">{sensor.ip}</span>
                         </div>
-                        <button onClick={() => { setSelectedSensorId(mac); localStorage.setItem('selected_sensor_id_v2', mac); resetMenuTimer(); }} className={`text-[0.7vw] uppercase font-bold px-[1vw] py-[0.5vw] rounded-[0.2vw] transition-all ${selectedSensorId === mac ? 'bg-[#D4CDA4] text-[#1A1D14]' : 'bg-white/10 text-white/50 hover:bg-white/20'}`}>
+                        <button onClick={async () => {
+                          if (sensor.pairedTvId && sensor.pairedTvId !== tvId) {
+                            const confirmSwitch = window.confirm('This sensor is currently paired to another TV. Switch it to this TV?');
+                            if (!confirmSwitch) return;
+                            const paired = await pairSensor(sensor);
+                            if (!paired) {
+                              alert('Could not switch this sensor to the current TV.');
+                              return;
+                            }
+                            const updatedSensors = { ...sensors, [mac]: { ...sensor, pairedTvId: tvId, lastSeen: Date.now() } };
+                            saveSensors(updatedSensors);
+                          }
+                          setSelectedSensorId(mac);
+                          localStorage.setItem('selected_sensor_id_v2', mac);
+                          resetMenuTimer();
+                        }} className={`text-[0.7vw] uppercase font-bold px-[1vw] py-[0.5vw] rounded-[0.2vw] transition-all ${selectedSensorId === mac ? 'bg-[#D4CDA4] text-[#1A1D14]' : 'bg-white/10 text-white/50 hover:bg-white/20'}`}>
                           {selectedSensorId === mac ? 'Active' : 'Select'}
                         </button>
                       </div>
@@ -1039,11 +1089,11 @@ export default function App() {
                 ))}
               </div>
               <div className="bg-white/5 p-[1.5vw] rounded-[1vw] flex flex-col justify-center gap-[1.5vw]">
-                <div className="flex justify-between items-end border-b border-white/10 pb-[1vw]">
+                <div className="flex justify-between items-center border-b border-white/10 pb-[1vw]">
                     <span className="text-[0.8vw] text-white/50 font-bold uppercase tracking-widest">Luminance</span>
                     <span className="text-[2vw] text-[#D4CDA4] font-mono leading-none">{telemetry.lux} <span className="text-[1vw] text-[#A3B18A]">LUX</span></span>
                 </div>
-                <div className="flex justify-between items-end">
+                <div className="flex justify-between items-center">
                     <span className="text-[0.8vw] text-white/50 font-bold uppercase tracking-widest">Temperature</span>
                     <span className="text-[2vw] text-[#D4CDA4] font-mono leading-none">{telemetry.temp} <span className="text-[1vw] text-[#A3B18A]">K</span></span>
                 </div>
