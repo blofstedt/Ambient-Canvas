@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Eye, EyeOff, Image as ImageIcon, ChevronLeft, ChevronRight, Settings, Clock, Cloud, FolderOpen, Power, MonitorPlay, LayoutTemplate, Sun, CloudRain, CloudFog, CloudSnow, CloudLightning, CheckCircle2, Search, Loader2 } from 'lucide-react';
+import { Activity, Eye, EyeOff, Image as ImageIcon, ChevronLeft, ChevronRight, Settings, Clock, Cloud, FolderOpen, Power, MonitorPlay, LayoutTemplate, Sun, CloudRain, CloudFog, CloudSnow, CloudLightning, CheckCircle2, Search, Loader2, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Art Collection
@@ -32,10 +32,10 @@ const SettingTooltip = ({ text }: { text: string }) => (
   <div className="relative inline-flex items-center group">
     <span
       tabIndex={0}
-      className="inline-flex items-center justify-center w-[1vw] h-[1vw] rounded-full border border-white/20 text-white/50 text-[0.58vw] font-bold cursor-help focus:outline-none focus:ring-[0.15vw] focus:ring-[#D4CDA4]/60"
+      className="inline-flex items-center justify-center w-[1vw] h-[1vw] rounded-full bg-[#D4CDA4]/12 border border-[#D4CDA4]/35 text-[#D4CDA4] cursor-help focus:outline-none focus:ring-[0.15vw] focus:ring-[#D4CDA4]/60"
       aria-label="Setting help"
     >
-      ?
+      <Info className="w-[0.58vw] h-[0.58vw]" />
     </span>
     <div className="pointer-events-none absolute z-50 left-1/2 -translate-x-1/2 top-[1.4vw] w-[18vw] bg-black/90 border border-white/20 rounded-[0.5vw] px-[0.6vw] py-[0.45vw] text-[0.6vw] uppercase tracking-[0.12em] text-white/80 leading-relaxed opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
       {text}
@@ -195,6 +195,9 @@ export default function App() {
   const [localFiles, setLocalFiles] = useState<string[]>([]);
 
   const [time, setTime] = useState(new Date());
+  const [overlayFont, setOverlayFont] = useState<string>(() => localStorage.getItem('ambient_overlay_font_v1') || 'serif');
+  const overlayFontClass = overlayFont === 'serif' ? 'font-serif' : overlayFont === 'mono' ? 'font-mono' : overlayFont === 'sans' ? 'font-sans' : '';
+  const overlayScriptStyle = overlayFont === 'script' ? { fontFamily: 'cursive' } : undefined;
 
   const shortLocationName = (city?: string, subdivision?: string, countryCode?: string) => {
     const primary = (city || '').trim();
@@ -274,6 +277,9 @@ export default function App() {
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+  useEffect(() => {
+    localStorage.setItem('ambient_overlay_font_v1', overlayFont);
+  }, [overlayFont]);
 
   const motionTimerRef = useRef<NodeJS.Timeout | null>(null);
   const uiTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -485,7 +491,7 @@ export default function App() {
           try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 1200);
-            const res = await fetch(`http://${target}/`, { signal: controller.signal });
+            const res = await fetch(`http://${target}/api/status`, { signal: controller.signal });
             clearTimeout(timeoutId);
             
             if (res.ok) {
@@ -823,17 +829,17 @@ export default function App() {
         style={{ opacity: isScreenBlack ? 0 : 0.15 + overlayOpacity * 0.85 }}
       >
         <div className={`transition-opacity duration-[3000ms] ${showClock ? 'opacity-100' : 'opacity-0'} ${isOledDimmed ? 'opacity-15' : ''}`}>
-          <div className="text-[5vw] font-serif tracking-tighter text-[#EAE6DA] drop-shadow-2xl leading-none">{time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-          <div className="text-[0.8vw] font-mono opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold">{time.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
+          <div className={`text-[5vw] tracking-tighter text-[#EAE6DA] drop-shadow-2xl leading-none ${overlayFontClass}`} style={overlayScriptStyle}>{time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+          <div className={`text-[0.8vw] opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold ${overlayFontClass}`} style={overlayScriptStyle}>{time.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
         </div>
         <div className={`transition-opacity duration-[3000ms] text-right ${showWeather ? 'opacity-100' : 'opacity-0'} ${isOledDimmed ? 'opacity-15' : ''}`}>
           <div className="flex flex-col items-end gap-[0.6vw]">
-            <div className="text-[3.4vw] font-serif tracking-tighter text-[#EAE6DA] drop-shadow-2xl leading-none">
+            <div className={`text-[3.4vw] tracking-tighter text-[#EAE6DA] drop-shadow-2xl leading-none ${overlayFontClass}`} style={overlayScriptStyle}>
               {weatherTemp !== null ? `${weatherTemp}°C` : '--°C'}
             </div>
             <div className="scale-[1.1] origin-right h-[3vw] flex items-center justify-end">{getWeatherIcon(weatherCode)}</div>
           </div>
-          <div className="text-[0.8vw] font-mono opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold max-w-[18vw] truncate">{weatherLocation}</div>
+          <div className={`text-[0.8vw] opacity-80 uppercase tracking-[0.3em] mt-[1vw] drop-shadow-md text-[#A3B18A] font-bold max-w-[18vw] truncate ${overlayFontClass}`} style={overlayScriptStyle}>{weatherLocation}</div>
         </div>
       </div>
       <div 
@@ -902,6 +908,20 @@ export default function App() {
                 </button>
               </div>
             </div>
+            <div className="flex justify-between items-center bg-white/5 border border-white/10 rounded-[0.8vw] px-[1vw] py-[0.7vw]">
+              <span className="text-[0.7vw] uppercase tracking-[0.25em] text-white/55 font-bold flex items-center gap-[0.4vw]">Overlay Font <SettingTooltip text="Choose the text style used by the time and weather overlays." /></span>
+              <div className="flex gap-[0.35vw]">
+                {(['serif', 'sans', 'mono', 'script'] as const).map((font) => (
+                  <button
+                    key={font}
+                    onClick={() => { setOverlayFont(font); resetMenuTimer(); }}
+                    className={`px-[0.7vw] py-[0.35vw] rounded-[0.35vw] text-[0.58vw] uppercase tracking-widest border transition-all ${overlayFont === font ? 'bg-[#D4CDA4] text-[#1A1D14] border-[#D4CDA4]' : 'border-white/10 text-white/60 hover:bg-white/5'}`}
+                  >
+                    {font}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           {/* Media Sources Section */}
@@ -959,11 +979,8 @@ export default function App() {
                   className={`flex-1 h-full rounded-[1vw] flex flex-col items-center justify-center gap-[0.2vw] border transition-all ${blackModeEnabled ? 'bg-black border-[#A3B18A] text-[#A3B18A]' : 'border-white/10 text-white/40 hover:bg-white/5'}`}
                 >
                   <EyeOff className="w-[1.2vw] h-[1.2vw]" />
-                  <span className="text-[0.7vw] uppercase tracking-widest font-bold mt-[0.2vw]">Black Mode</span>
+                  <span className="text-[0.7vw] uppercase tracking-widest font-bold mt-[0.2vw] flex items-center gap-[0.35vw]">Black Mode <SettingTooltip text="Recommended for Full-Array LED, Mini-LED, and OLED panels to keep blacks truly dark in low-light scenes." /></span>
                 </button>
-                <p className="text-[0.5vw] text-white/30 uppercase text-center leading-tight">
-                  For Full Array LED, OLED, and Mini LED TVs only
-                </p>
               </div>
               <div className="flex flex-col justify-center">
                  <div className="text-[0.7vw] text-white/40 uppercase font-bold tracking-widest mb-[0.4vw] flex items-center gap-[0.4vw]">Sensitivity <SettingTooltip text="Higher values require more consecutive motion readings before waking the display." /></div>
@@ -1022,7 +1039,7 @@ export default function App() {
                             const val = e.currentTarget.value.trim();
                             if (val) {
                               try {
-                                const res = await fetch(`http://${val}/`);
+                                const res = await fetch(`http://${val}/api/status`);
                                 const data = await res.json();
                                 if (data.id) {
                                   if (data.pairedTvId && data.pairedTvId !== tvId) {
