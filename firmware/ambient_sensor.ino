@@ -198,9 +198,8 @@ void setup() {
   Serial.begin(115200);
   pinMode(motionPin, INPUT_PULLDOWN);
 
-  // Set up the sensor LED pin and dim it right away
   pinMode(sensorLedPin, OUTPUT);
-  analogWrite(sensorLedPin, 12); // Value out of 255 (12 is ~5% brightness). Adjust if you want it dimmer or brighter.
+  analogWrite(sensorLedPin, 2); // Extremely dim
 
   if (tcs.begin()) {
     Serial.println("Found TCS34725 Color Sensor");
@@ -228,7 +227,7 @@ void setup() {
 void loop() {
   server.handleClient();
 
-  if (millis() - lastReadTime > 500) {
+  if (millis() - lastReadTime > 50) { // Polling 10x faster (every 50ms)
     uint16_t r, g, b, c;
     tcs.getRawData(&r, &g, &b, &c);
     currentLux = tcs.calculateLux(r, g, b);
@@ -237,7 +236,7 @@ void loop() {
     lastReadTime = millis();
   }
 
-  if (millis() - lastSerialPrint > 2000) {
+  if (millis() - lastSerialPrint > 250) { // Serial output 8x faster
     lastSerialPrint = millis();
     Serial.print("[TELEMETRY] lux=");
     Serial.print(currentLux);
